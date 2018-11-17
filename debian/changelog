@@ -1,0 +1,17 @@
+ghdl (0.35-0~gekkio1~cosmic3) cosmic; urgency=medium
+
+  * Add default clang dependency
+
+ -- Joonas Javanainen <joonas.javanainen@gmail.com>  Sat, 17 Nov 2018 19:08:09 +0200
+
+ghdl (0.35-0~gekkio1~cosmic2) cosmic; urgency=medium
+
+  * Add missing zlib build dependency
+
+ -- Joonas Javanainen <joonas.javanainen@gmail.com>  Sat, 17 Nov 2018 19:00:32 +0200
+
+ghdl (0.35-0~gekkio1~cosmic1) cosmic; urgency=medium
+
+  * Initial release for Cosmic
+
+ -- Joonas Javanainen <joonas.javanainen@gmail.com>  Sat, 17 Nov 2018 18:29:35 +0200

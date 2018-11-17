@@ -39,3 +39,11 @@ run-bind.adb
 run-bind.ads
 src/version.ads
 doc/_build/
+
+debian/.debhelper
+debian/*-stamp
+debian/*.substvars
+debian/files
+debian/ghdl-gekkio/
+debian/ghdl-gekkio*.debhelper.log
+debian/tmp/

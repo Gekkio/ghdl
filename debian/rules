@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_configure:
+	./configure --prefix=/usr --with-llvm-config=llvm-config-4.0
+
+override_dh_auto_test:
+
+override_dh_auto_clean:
+	dh_auto_clean
+	
+	rm -f grt-backtraces-impl.ads
+	rm -rf grt
+	rm -rf lib
+	rm -rf pic

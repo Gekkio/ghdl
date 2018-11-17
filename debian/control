@@ -1,0 +1,18 @@
+Source: ghdl
+Section: universe/devel
+Priority: optional
+Maintainer: Joonas Javanainen <joonas.javanainen@gmail.com>
+Build-Depends: debhelper (>= 11), gnat-7, llvm-4.0-dev, clang-4.0, zlib1g-dev, clang
+Standards-Version: 4.1.3
+Homepage: http://ghdl.free.fr
+
+Package: ghdl-gekkio
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Conflicts: ghdl, ghdl-llvm, ghdl-mcode, ghdl-gcc
+Description: VHDL simulator
+ GHDL is an open-source simulator for the VHDL language. GHDL allows you to
+ compile and execute your VHDL code directly in your PC. GHDL fully supports
+ the 1987, 1993, 2002 versions of the IEEE 1076 VHDL standard, and partially
+ the latest 2008 revision (well enough to support fixed_generic_pkg or
+ float_generic_pkg).
