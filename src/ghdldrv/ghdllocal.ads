@@ -25,7 +25,7 @@ package Ghdllocal is
 
    --  Handle:
    --  --std=xx, --work=xx, -Pxxx, --workdir=x, --ieee=x, -Px, and -v
-   function Decode_Driver_Option (Option : String) return Boolean;
+   function Decode_Driver_Option (Opt : String) return Boolean;
 
    type Command_Lib is abstract new Command_Type with null record;
 
@@ -55,6 +55,9 @@ package Ghdllocal is
 
    --  Set with -v option.
    Flag_Verbose : Boolean := False;
+
+   --  True if --post is present.
+   Flag_Postprocess : Boolean := False;
 
    --  Suffix for asm files.
    Asm_Suffix : constant String := ".s";

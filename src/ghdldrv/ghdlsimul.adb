@@ -37,7 +37,7 @@ with Simul.Simulation.Main;
 with Simul.Debugger;
 with Simul.Execution;
 
-with Ghdlcomp;
+with Ghdlcomp; use Ghdlcomp;
 
 with Grt.Types;
 with Grt.Options;
@@ -53,13 +53,21 @@ package body Ghdlsimul is
    procedure Compile_Init (Analyze_Only : Boolean) is
    begin
       if Analyze_Only then
+         Setup_Libraries (True);
+      else
+         Setup_Libraries (False);
+         Libraries.Load_Std_Library;
+         --  WORK library is not loaded.  FIXME: why ?
+      end if;
+
+      if Time_Resolution /= 'a' then
+         Std_Package.Set_Time_Resolution (Time_Resolution);
+      end if;
+
+      if Analyze_Only then
          return;
       end if;
 
-      Setup_Libraries (False);
-      Libraries.Load_Std_Library;
-
-      -- Here, time_base can be set.
       Simul.Annotations.Annotate (Std_Package.Std_Standard_Unit);
 
       Canon.Canon_Flag_Add_Labels := True;
@@ -133,6 +141,9 @@ package body Ghdlsimul is
       Grt.Options.Progname := Grt.Types.To_Ghdl_C_String (Argv0.all'Address);
       Grt.Errors.Set_Error_Stream (Grt.Stdio.stdout);
 
+      Grtlink.Flag_String := Flags.Flag_String;
+      Grt.Options.Set_Time_Resolution;
+
       for I in Args'Range loop
          Arg := Args (I);
          if Arg.all = "--disp-tree" then
@@ -178,8 +189,6 @@ package body Ghdlsimul is
          Set_Exit_Status (Exit_Status (Grt.Errors.Exit_Status));
          return;
       end if;
-
-      Grtlink.Flag_String := Flags.Flag_String;
 
       Simul.Simulation.Main.Simulation_Entity (Top_Conf);
 

@@ -24,6 +24,7 @@ with Parse;
 with Std_Names;
 with Sem_Names; use Sem_Names;
 with Sem_Types;
+with Sem_Decls;
 with Std_Package;
 with Sem_Scopes;
 with Iir_Chains; use Iir_Chains;
@@ -738,7 +739,7 @@ package body Sem_Assocs is
    procedure Add_Individual_Assoc_Selected_Name
      (Choice : out Iir; Sub_Assoc : Iir; Formal : Iir)
    is
-      Element : constant Iir := Get_Selected_Element (Formal);
+      Element : constant Iir := Get_Named_Entity (Formal);
       Last_Choice : Iir;
    begin
       --  Try to find the existing choice.
@@ -870,14 +871,12 @@ package body Sem_Assocs is
       Index_Tlist : constant Iir_Flist := Get_Index_Subtype_List (Atype);
       Nbr_Dims : constant Natural := Get_Nbr_Elements (Index_Tlist);
       Index_Type : constant Iir := Get_Nth_Element (Index_Tlist, Dim - 1);
+      Chain : constant Iir := Get_Individual_Association_Chain (Assoc);
       Low, High : Iir;
-      Chain : Iir;
       El : Iir;
    begin
-      Chain := Get_Individual_Association_Chain (Assoc);
       Sem_Check_Continuous_Choices
-        (Chain, Index_Type, False, Get_Location (Assoc), Low, High);
-      Set_Individual_Association_Chain (Assoc, Chain);
+        (Chain, Index_Type, Low, High, Get_Location (Assoc), False);
       if Dim < Nbr_Dims then
          El := Chain;
          while El /= Null_Iir loop
@@ -909,7 +908,7 @@ package body Sem_Assocs is
       end if;
       Chain := Get_Individual_Association_Chain (Assoc);
       Sem_Choices_Range
-        (Chain, Base_Index, True, False, Get_Location (Assoc), Low, High);
+        (Chain, Base_Index, Low, High, Get_Location (Assoc), True, False);
       Set_Individual_Association_Chain (Assoc, Chain);
       if Actual_Index = Null_Iir then
          declare
@@ -1012,6 +1011,8 @@ package body Sem_Assocs is
       if Get_Constraint_State (Atype) /= Fully_Constrained then
          --  Some (sub-)elements are unbounded, create a bounded subtype.
          declare
+            Inter : constant Iir :=
+              Get_Interface_Of_Formal (Get_Formal (Assoc));
             Ntype : Iir;
             Nel_List : Iir_Flist;
             Nrec_El : Iir;
@@ -1025,6 +1026,12 @@ package body Sem_Assocs is
                Set_Resolution_Indication
                  (Ntype, Get_Resolution_Indication (Atype));
             end if;
+            if Get_Kind (Inter) = Iir_Kind_Interface_Signal_Declaration
+            then
+               --  The subtype is used for signals.
+               Set_Has_Signal_Flag (Ntype, True);
+            end if;
+
             Nel_List := Create_Iir_Flist (Nbr_El);
             Set_Elements_Declaration_List (Ntype, Nel_List);
 
@@ -1046,12 +1053,11 @@ package body Sem_Assocs is
                   Location_Copy (Nrec_El, Ch);
                   Set_Parent (Nrec_El, Ntype);
                   Set_Identifier (Nrec_El, Get_Identifier (Rec_El));
-                  Set_Base_Element_Declaration
-                    (Nrec_El, Get_Base_Element_Declaration (Rec_El));
-                  Set_Element_Position
-                    (Nrec_El, Get_Element_Position (Rec_El));
+                  pragma Assert (I = Natural (Get_Element_Position (Rec_El)));
+                  Set_Element_Position (Nrec_El, Iir_Index32 (I));
                   Ch := Get_Associated_Expr (Ch);
                   Set_Type (Nrec_El, Get_Type (Get_Actual (Ch)));
+                  Append_Owned_Element_Constraint (Ntype, Nrec_El);
                end if;
                Staticness := Min (Staticness,
                                   Get_Type_Staticness (Get_Type (Nrec_El)));
@@ -1096,7 +1102,7 @@ package body Sem_Assocs is
    --  individual association ASSOC: compute bounds, detect missing elements.
    procedure Finish_Individual_Association (Assoc : Iir)
    is
-      Formal : Iir;
+      Inter : Iir;
       Atype : Iir;
    begin
       --  Guard.
@@ -1104,8 +1110,8 @@ package body Sem_Assocs is
          return;
       end if;
 
-      Formal := Get_Interface_Of_Formal (Get_Formal (Assoc));
-      Atype := Get_Type (Formal);
+      Inter := Get_Interface_Of_Formal (Get_Formal (Assoc));
+      Atype := Get_Type (Inter);
       Set_Whole_Association_Flag (Assoc, True);
 
       case Get_Kind (Atype) is
@@ -1118,6 +1124,11 @@ package body Sem_Assocs is
                Atype := Create_Array_Subtype (Atype, Get_Location (Assoc));
                Set_Index_Constraint_Flag (Atype, True);
                Set_Constraint_State (Atype, Fully_Constrained);
+               if Get_Kind (Inter) = Iir_Kind_Interface_Signal_Declaration
+               then
+                  --  The subtype is used for signals.
+                  Set_Has_Signal_Flag (Atype, True);
+               end if;
                Set_Actual_Type (Assoc, Atype);
                Set_Actual_Type_Definition (Assoc, Atype);
                Finish_Individual_Assoc_Array (Assoc, Assoc, 1);
@@ -1483,7 +1494,7 @@ package body Sem_Assocs is
          Inter : Iir;
       begin
          --  A function declaration.
-         if Get_Kind (Decl) /= Iir_Kind_Function_Declaration then
+         if not Is_Function_Declaration (Decl) then
             return False;
          end if;
          --  That returns a boolean.
@@ -1763,7 +1774,7 @@ package body Sem_Assocs is
 
       Set_Named_Entity (Actual, Res);
       Xrefs.Xref_Name (Actual);
-      Set_Use_Flag (Res, True);
+      Sem_Decls.Mark_Subprogram_Used (Res);
    end Sem_Association_Subprogram;
 
    --  Associate ASSOC with interface INTERFACE
@@ -1815,6 +1826,11 @@ package body Sem_Assocs is
                   null;
             end case;
 
+            if Actual = Null_Iir then
+               Match := Fully_Compatible;
+               return;
+            end if;
+
             --  There could be an ambiguity between a conversion and a normal
             --  actual expression.  Check if the new actual is an object and
             --  if the object is of the corresponding class.
@@ -1854,7 +1870,7 @@ package body Sem_Assocs is
       end if;
 
       if Match = Not_Compatible then
-         if Finish then
+         if Finish and then not Is_Error (Actual) then
             Error_Msg_Sem (+Assoc, "can't associate %n with %n",
                            (+Actual, +Inter), Cont => True);
             Error_Msg_Sem
@@ -2062,6 +2078,9 @@ package body Sem_Assocs is
       Assoc : Iir;
       Inter : Iir;
 
+      --  True if -Whide is enabled (save the state).
+      Warn_Hide_Enabled : Boolean;
+
       type Param_Assoc_Type is (None, Open, Individual, Whole);
 
       type Assoc_Array is array (Natural range <>) of Param_Assoc_Type;
@@ -2150,7 +2169,14 @@ package body Sem_Assocs is
          --  declaration and that would otherwise be directly visible is
          --  hidden.
          Sem_Scopes.Open_Declarative_Region;
+
+         --  Do not warn about hidding here, way to common, way useless.
+         Warn_Hide_Enabled := Is_Warning_Enabled (Warnid_Hide);
+         Enable_Warning (Warnid_Hide, False);
+
          Sem_Scopes.Add_Declarations_From_Interface_Chain (Interface_Chain);
+
+         Enable_Warning (Warnid_Hide, Warn_Hide_Enabled);
 
          First_Named_Assoc := Assoc;
          loop
@@ -2176,6 +2202,8 @@ package body Sem_Assocs is
                if Finish then
                   --  FIXME: display the name of subprg or component/entity.
                   --  FIXME: fetch the interface (for parenthesis_name).
+                  --  FIXME: this is always a duplicate of a message from
+                  --     Sem_Name.
                   Error_Msg_Sem (+Assoc, "no interface for %n in association",
                                  +Get_Formal (Assoc));
                end if;
@@ -2310,7 +2338,7 @@ package body Sem_Assocs is
                then
                   if Finish then
                      Error_Msg_Sem
-                       (+Assoc, "formal %i is not an interface name", +Inter);
+                       (+Assoc, "%n is not an interface name", +Inter);
                   end if;
                   Match := Not_Compatible;
                   exit;
@@ -2329,8 +2357,7 @@ package body Sem_Assocs is
                   if Finish then
                      Error_Msg_Sem
                        (+Assoc,
-                        "formal conversion allowed only for interface object",
-                        +Formal_Conv);
+                        "formal conversion allowed only for interface object");
                   end if;
                   Match := Not_Compatible;
                   exit;

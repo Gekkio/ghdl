@@ -20,7 +20,7 @@ with Flags; use Flags;
 with Types; use Types;
 with Errorout; use Errorout;
 with Evaluation; use Evaluation;
-with Sem;
+with Sem_Utils;
 with Sem_Expr; use Sem_Expr;
 with Sem_Scopes; use Sem_Scopes;
 with Sem_Names; use Sem_Names;
@@ -48,6 +48,15 @@ package body Sem_Types is
       --  Maybe the type is resolved through its elements.
       if Func /= Null_Iir then
          Set_Resolution_Function_Flag (Func, True);
+
+         --  For internal reasons of translation, the element subtype has
+         --  to be translated for signals.
+         --  FIXME: maybe move the whole Has_Signal flag generation in
+         --  translation, as this is needed only for translation.
+         --  FIXME: how to deal with incorrect function ?  Use an Error node ?
+         Set_Type_Has_Signal
+           (Get_Element_Subtype
+              (Get_Type (Get_Interface_Declaration_Chain (Func))));
       end if;
    end Mark_Resolution_Function;
 
@@ -82,6 +91,13 @@ package body Sem_Types is
            | Iir_Kind_Record_Subtype_Definition =>
             Set_Type_Has_Signal (Get_Base_Type (Atype));
             Mark_Resolution_Function (Atype);
+            declare
+               Tm : constant Iir := Get_Subtype_Type_Mark (Atype);
+            begin
+               if Tm /= Null_Iir then
+                  Set_Type_Has_Signal (Get_Type (Get_Named_Entity (Tm)));
+               end if;
+            end;
          when others =>
             null;
       end case;
@@ -341,6 +357,8 @@ package body Sem_Types is
          when Iir_Kind_Attribute_Name =>
             Sem_Name (Range_Expr);
             Range_Expr1 := Name_To_Range (Range_Expr);
+         when Iir_Kind_Error =>
+            Range_Expr1 := Null_Iir;
          when others =>
             Error_Kind ("sem_physical_type_definition", Range_Expr);
       end case;
@@ -530,7 +548,8 @@ package body Sem_Types is
         and then not Is_Fully_Constrained_Type (El_Type)
       then
          Error_Msg_Sem
-           (+Def, "array element of unconstrained %n is not allowed",
+           (+Def,
+            "array element of unconstrained %n is not allowed before vhdl08",
             +El_Type);
       end if;
       Set_Resolved_Flag (Def, Get_Resolved_Flag (El_Type));
@@ -572,6 +591,10 @@ package body Sem_Types is
                   Inter : Iir;
                   Inter_Type : Iir;
                begin
+                  --  LRM08 3.5.1 Protected type declarations
+                  --  Such formal parameters must not be of an access type or
+                  --  a file type; moreover, they must not have a subelement
+                  --  that is an access type of a file type.
                   Inter := Get_Interface_Declaration_Chain (El);
                   while Inter /= Null_Iir loop
                      Inter_Type := Get_Type (Inter);
@@ -586,14 +609,19 @@ package body Sem_Types is
                      end if;
                      Inter := Get_Chain (Inter);
                   end loop;
+
+                  --  LRM08 3.5.1 Protected type declarations
+                  --  Additionally, in the case of a function subprogram, the
+                  --  return type of the function must not be of an access type
+                  --  or file type; moreover, it must not have a subelement
+                  --  that is an access type of a file type.
                   if Get_Kind (El) = Iir_Kind_Function_Declaration then
                      Inter_Type := Get_Return_Type (El);
                      if Inter_Type /= Null_Iir
                        and then Get_Signal_Type_Flag (Inter_Type) = False
                      then
                         Error_Msg_Sem
-                          (+El,
-                           "method return type must not be access of file");
+                          (+El, "method cannot return an access or a file");
                      end if;
                   end if;
                end;
@@ -701,24 +729,41 @@ package body Sem_Types is
 
    --  Return the constraint state from CONST (the initial state) and EL_TYPE,
    --  as if ATYPE was a new element of a record.
-   function Update_Record_Constraint (Const : Iir_Constraint; El_Type : Iir)
-                                     return Iir_Constraint is
+   --
+   --  LRM08 5 Types
+   --  A composite subtype is said to be unconstrained if:
+   --  - [...]
+   --  - It is a record subtype with at least one element of a composite
+   --    subtype and each element that is of a composite subtype is
+   --    unconstrained.
+   --
+   --  A composite subtype is said to be fully constrained if:
+   --  - [...]
+   --  - It is a record subtype and each element subtype either is not a
+   --    composite subtype or is a fully constrained composite subtype.
+   procedure Update_Record_Constraint (Constraint : in out Iir_Constraint;
+                                       Composite_Found : in out Boolean;
+                                       El_Type : Iir) is
    begin
       if Get_Kind (El_Type) not in Iir_Kinds_Composite_Type_Definition then
-         return Const;
+         pragma Assert (Composite_Found or Constraint = Fully_Constrained);
+         return;
       end if;
 
-      case Const is
-         when Fully_Constrained
-           | Unconstrained =>
-            if Get_Constraint_State (El_Type) = Const then
-               return Const;
-            else
-               return Partially_Constrained;
-            end if;
-         when Partially_Constrained =>
-            return Partially_Constrained;
-      end case;
+      if Composite_Found then
+         case Constraint is
+            when Fully_Constrained
+              | Unconstrained =>
+               if Get_Constraint_State (El_Type) /= Constraint then
+                  Constraint := Partially_Constrained;
+               end if;
+            when Partially_Constrained =>
+               Constraint := Partially_Constrained;
+         end case;
+      else
+         Composite_Found := True;
+         Constraint := Get_Constraint_State (El_Type);
+      end if;
    end Update_Record_Constraint;
 
    function Get_Array_Constraint (Def : Iir) return Iir_Constraint
@@ -770,7 +815,7 @@ package body Sem_Types is
          Set_Expr_Staticness (El, Locally);
          Set_Name_Staticness (El, Locally);
          Set_Type (El, Def);
-         Sem.Compute_Subprogram_Hash (El);
+         Sem_Utils.Compute_Subprogram_Hash (El);
          Sem_Scopes.Add_Name (El);
          Name_Visible (El);
          Xref_Decl (El);
@@ -811,6 +856,7 @@ package body Sem_Types is
       Resolved_Flag : Boolean;
       Type_Staticness : Iir_Staticness;
       Constraint : Iir_Constraint;
+      Composite_Found : Boolean;
    begin
       --  LRM 10.1
       --  5. A record type declaration,
@@ -820,6 +866,7 @@ package body Sem_Types is
       Last_Type := Null_Iir;
       Type_Staticness := Locally;
       Constraint := Fully_Constrained;
+      Composite_Found := False;
       Set_Signal_Type_Flag (Def, True);
 
       for I in Flist_First .. Flist_Last (El_List) loop
@@ -858,11 +905,10 @@ package body Sem_Types is
               Resolved_Flag and Get_Resolved_Flag (El_Type);
             Type_Staticness := Min (Type_Staticness,
                                     Get_Type_Staticness (El_Type));
-            Constraint := Update_Record_Constraint (Constraint, El_Type);
+            Update_Record_Constraint (Constraint, Composite_Found, El_Type);
          else
             Type_Staticness := None;
          end if;
-         Set_Base_Element_Declaration (El, El);
          Sem_Scopes.Add_Name (El);
          Name_Visible (El);
          Xref_Decl (El);
@@ -1357,7 +1403,7 @@ package body Sem_Types is
            (+Atype, "no matching resolution function for %n", +Name);
       else
          Name1 := Finish_Sem_Name (Name);
-         Mark_Subprogram_Used (Res);
+         Sem_Decls.Mark_Subprogram_Used (Res);
          Set_Resolved_Flag (Atype, True);
          Set_Resolution_Indication (Atype, Name1);
       end if;
@@ -1366,29 +1412,20 @@ package body Sem_Types is
    --  Analyze the constraint DEF + RESOLUTION for type TYPE_MARK.  The
    --  result is always a subtype definition.
    function Sem_Subtype_Constraint
-     (Def : Iir; Type_Mark : Iir; Resolution : Iir)
-     return Iir;
+     (Def : Iir; Type_Mark : Iir; Resolution : Iir) return Iir;
 
    --  Create a copy of elements_declaration_list of SRC and set it to DST.
    procedure Copy_Record_Elements_Declaration_List (Dst : Iir; Src : Iir)
    is
       El_List : constant Iir_Flist := Get_Elements_Declaration_List (Src);
       New_El_List : Iir_Flist;
-      El, New_El : Iir;
+      El : Iir;
    begin
       New_El_List := Create_Iir_Flist (Get_Nbr_Elements (El_List));
       Set_Elements_Declaration_List (Dst, New_El_List);
       for I in Flist_First .. Flist_Last (El_List) loop
          El := Get_Nth_Element (El_List, I);
-         New_El := Create_Iir (Iir_Kind_Element_Declaration);
-         Location_Copy (New_El, El);
-         Set_Parent (New_El, Dst);
-         Set_Identifier (New_El, Get_Identifier (El));
-         Set_Type (New_El, Get_Type (El));
-         Set_Base_Element_Declaration (New_El,
-                                       Get_Base_Element_Declaration (El));
-         Set_Element_Position (New_El, Get_Element_Position (El));
-         Set_Nth_Element (New_El_List, I, New_El);
+         Set_Nth_Element (New_El_List, I, El);
       end loop;
    end Copy_Record_Elements_Declaration_List;
 
@@ -1456,6 +1493,7 @@ package body Sem_Types is
          when Iir_Kind_Record_Type_Definition
            | Iir_Kind_Record_Subtype_Definition =>
             Res := Create_Iir (Iir_Kind_Record_Subtype_Definition);
+            Set_Is_Ref (Res, True);
             Set_Type_Staticness (Res, Get_Type_Staticness (Def));
             if Get_Kind (Def) = Iir_Kind_Record_Subtype_Definition then
                Set_Resolution_Indication
@@ -1479,8 +1517,8 @@ package body Sem_Types is
    procedure Sem_Array_Constraint_Indexes (Def : Iir; Type_Mark : Iir)
    is
       El_Type : constant Iir := Get_Element_Subtype (Type_Mark);
+      Base_Type : constant Iir := Get_Base_Type (Type_Mark);
       Type_Index, Subtype_Index: Iir;
-      Base_Type : Iir;
       Index_Staticness : Iir_Staticness;
       Type_Nbr_Dim : Natural;
       Subtype_Nbr_Dim : Natural;
@@ -1489,7 +1527,6 @@ package body Sem_Types is
       Subtype_Index_List2 : Iir_Flist;
    begin
       -- Check each index constraint against array type.
-      Base_Type := Get_Base_Type (Type_Mark);
       Set_Base_Type (Def, Base_Type);
 
       Index_Staticness := Locally;
@@ -1509,10 +1546,12 @@ package body Sem_Types is
          if Get_Kind (Type_Mark) = Iir_Kind_Array_Subtype_Definition then
             Set_Index_Constraint_Flag
               (Def, Get_Index_Constraint_Flag (Type_Mark));
+            Set_Index_Subtype_List
+              (Def, Get_Index_Subtype_List (Type_Mark));
          else
             Set_Index_Constraint_Flag (Def, False);
+            Set_Index_Subtype_List (Def, Type_Index_List);
          end if;
-         Set_Index_Subtype_List (Def, Type_Index_List);
       else
          if Get_Kind (Type_Mark) = Iir_Kind_Array_Subtype_Definition
            and then Get_Index_Constraint_Flag (Type_Mark)
@@ -1760,6 +1799,7 @@ package body Sem_Types is
    begin
       pragma Assert (Get_Prefix (Def) = Null_Iir);
       Res := Create_Iir (Iir_Kind_Record_Subtype_Definition);
+      Set_Is_Ref (Res, True);
       Location_Copy (Res, Def);
       El_List := Create_Iir_List;
       Chain := Get_Association_Chain (Def);
@@ -1772,6 +1812,8 @@ package body Sem_Types is
             El := Reparse_As_Record_Element_Constraint (Get_Actual (Chain));
             if El /= Null_Iir then
                Append_Element (El_List, El);
+               Set_Parent (El, Res);
+               Append_Owned_Element_Constraint (Res, El);
             end if;
          end if;
          Chain := Get_Chain (Chain);
@@ -1854,6 +1896,7 @@ package body Sem_Types is
       Index_El : Iir;
    begin
       Res := Create_Iir (Iir_Kind_Record_Subtype_Definition);
+      Set_Is_Ref (Res, True);
       Location_Copy (Res, Def);
       Set_Base_Type (Res, Get_Base_Type (Type_Mark));
       if Get_Kind (Type_Mark) = Iir_Kind_Record_Subtype_Definition then
@@ -1863,6 +1906,7 @@ package body Sem_Types is
 
       case Get_Kind (Def) is
          when Iir_Kind_Subtype_Definition =>
+            --  Just an alias, without new constraints.
             Free_Name (Def);
             Set_Signal_Type_Flag (Res, Get_Signal_Type_Flag (Type_Mark));
             Set_Constraint_State (Res, Get_Constraint_State (Type_Mark));
@@ -1877,6 +1921,9 @@ package body Sem_Types is
             for I in Flist_First .. Flist_Last (Index_List) loop
                Index_El := Get_Nth_Element (Index_List, I);
                El := Reparse_As_Record_Element_Constraint (Index_El);
+               if El = Null_Iir then
+                  return Create_Error_Type (Type_Mark);
+               end if;
                Set_Nth_Element (El_List, I, El);
             end loop;
 
@@ -1888,6 +1935,7 @@ package body Sem_Types is
             Error_Kind ("sem_record_constraint", Def);
       end case;
 
+      --  Handle resolution.
       Res_List := Null_Iir_Flist;
       if Resolution /= Null_Iir then
          case Get_Kind (Resolution) is
@@ -1913,22 +1961,20 @@ package body Sem_Types is
             Res_Els : Iir_Array (0 .. Nbr_Els - 1) := (others => Null_Iir);
             Pos : Natural;
             Constraint : Iir_Constraint;
+            Composite_Found : Boolean;
             Staticness : Iir_Staticness;
          begin
             --  Fill ELS with record constraints.
             if El_List /= Null_Iir_Flist then
                for I in Flist_First .. Flist_Last (El_List) loop
                   El := Get_Nth_Element (El_List, I);
-                  Tm_El :=
-                    Find_Name_In_Flist (Tm_El_List, Get_Identifier (El));
+                  Tm_El := Find_Name_In_Flist
+                    (Tm_El_List, Get_Identifier (El));
                   if Tm_El = Null_Iir then
                      --  Constraint element references an element name that
                      --  doesn't exist.
                      Error_Msg_Sem (+El, "%n has no %n", (+Type_Mark, +El));
                   else
-                     Set_Element_Declaration (El, Tm_El);
-                     Set_Base_Element_Declaration
-                       (El, Get_Base_Element_Declaration (Tm_El));
                      Pos := Natural (Get_Element_Position (Tm_El));
                      if Els (Pos) /= Null_Iir then
                         Error_Msg_Sem
@@ -1950,8 +1996,10 @@ package body Sem_Types is
                                 (El_Type, Tm_El_Type);
                            when Iir_Kind_Record_Type_Definition
                              | Iir_Kind_Record_Subtype_Definition =>
-                              El_Type :=
-                                Reparse_As_Record_Constraint (El_Type);
+                              El_Type := Reparse_As_Record_Constraint
+                                (El_Type);
+                           when Iir_Kind_Error =>
+                              null;
                            when others =>
                               Error_Msg_Sem
                                 (+El_Type,
@@ -1981,7 +2029,7 @@ package body Sem_Types is
                         Error_Msg_Sem
                           (+Els (Pos), " (location of previous constrained)");
                      else
-                        Res_Els (Pos) := Get_Element_Declaration (El);
+                        Res_Els (Pos) := Tm_El;
                      end if;
                   end if;
                   --Free_Iir (El);
@@ -1993,6 +2041,7 @@ package body Sem_Types is
             El_List := Create_Iir_Flist (Nbr_Els);
             Set_Elements_Declaration_List (Res, El_List);
             Constraint := Fully_Constrained;
+            Composite_Found := False;
             Staticness := Locally;
             for I in Els'Range loop
                Tm_El := Get_Nth_Element (Tm_El_List, I);
@@ -2006,22 +2055,23 @@ package body Sem_Types is
                      --  Only a resolution constraint.
                      El := Create_Iir (Iir_Kind_Record_Element_Constraint);
                      Location_Copy (El, Tm_El);
-                     Set_Element_Declaration (El, Tm_El);
-                     Set_Base_Element_Declaration
-                       (El, Get_Base_Element_Declaration (Tm_El));
-                     Set_Element_Position (El, Get_Element_Position (Tm_El));
+                     Set_Parent (El, Res);
                      El_Type := Null_Iir;
+                     Append_Owned_Element_Constraint (Res, El);
                   else
                      El := Els (I);
                      El_Type := Get_Type (El);
+                     pragma Assert
+                       (Get_Kind (El) = Iir_Kind_Record_Element_Constraint);
                   end if;
                   El_Type := Sem_Subtype_Constraint (El_Type,
                                                      Get_Type (Tm_El),
                                                      Res_Els (I));
                   Set_Type (El, El_Type);
+                  Set_Element_Position (El, Get_Element_Position (Tm_El));
                end if;
                Set_Nth_Element (El_List, I, El);
-               Constraint := Update_Record_Constraint (Constraint, El_Type);
+               Update_Record_Constraint (Constraint, Composite_Found, El_Type);
                Staticness := Min (Staticness, Get_Type_Staticness (El_Type));
             end loop;
             Set_Constraint_State (Res, Constraint);
@@ -2245,6 +2295,9 @@ package body Sem_Types is
             Free_Name (Def);
             return Type_Mark;
 
+         when Iir_Kind_Error =>
+            return Type_Mark;
+
          when others =>
             Error_Kind ("sem_subtype_constraint", Type_Mark);
             return Type_Mark;
@@ -2267,6 +2320,8 @@ package body Sem_Types is
            | Iir_Kind_Attribute_Name =>
             Type_Mark := Sem_Type_Mark (Def, Incomplete);
             return Type_Mark;
+         when Iir_Kind_Error =>
+            return Def;
          when others =>
             null;
       end case;
@@ -2291,7 +2346,9 @@ package body Sem_Types is
 
       Res := Sem_Subtype_Constraint
         (Def, Type_Mark, Get_Resolution_Indication (Def));
-      Set_Subtype_Type_Mark (Res, Type_Mark_Name);
+      if not Is_Error (Res) then
+         Set_Subtype_Type_Mark (Res, Type_Mark_Name);
+      end if;
       return Res;
    end Sem_Subtype_Indication;
 

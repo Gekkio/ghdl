@@ -40,10 +40,9 @@ package Translation is
 
    procedure Gen_Filename (Design_File : Iir);
 
-   --  Primary unit + secondary unit (architecture name which may be null)
-   --  to elaborate.
-   procedure Elaborate (Primary : String;
-                        Secondary : String;
+   --  Generate elaboration code for CONFIG.  Also use units from Configure
+   --  package.
+   procedure Elaborate (Config : Iir;
                         Filelist : String;
                         Whole : Boolean);
 
@@ -81,6 +80,10 @@ package Translation is
    --  support nested subprograms.
    Flag_Unnest_Subprograms : Boolean := False;
 
+   --  If > 0, emit a call for large dynamic allocation on the stack.  Large
+   --  defined by the value.
+   Flag_Check_Stack_Allocation : Natural := 32 * 1024;
+
    type Foreign_Kind_Type is (Foreign_Unknown,
                               Foreign_Vhpidirect,
                               Foreign_Intrinsic);
@@ -91,11 +94,10 @@ package Translation is
          when Foreign_Unknown =>
             null;
          when Foreign_Vhpidirect =>
-            --  Positions in name_table.name_buffer.
-            Lib_First : Natural;
-            Lib_Last : Natural;
-            Subprg_First : Natural;
-            Subprg_Last : Natural;
+            Lib_Name : String (1 .. 32);
+            Lib_Len : Natural;
+            Subprg_Name : String (1 .. 64);
+            Subprg_Len : Natural;
          when Foreign_Intrinsic =>
             null;
       end case;

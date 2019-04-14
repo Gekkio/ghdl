@@ -26,6 +26,7 @@ with Ghdlprint; use Ghdlprint;
 with Libraries;
 with Errorout; use Errorout;
 with Iirs; use Iirs;
+with Sem_Lib; use Sem_Lib;
 with Ghdlmain; use Ghdlmain;
 with Ghdllocal; use Ghdllocal;
 
@@ -409,6 +410,8 @@ package body Ghdlxml is
                   Put_Field (F, Image_Token_Type (Get_Token_Type (N, F)));
                when Type_Name_Id =>
                   Put_Field (F, XML_Image (Get_Name_Id (N, F)));
+               when Type_Source_File_Entry =>
+                  null;
             end case;
          end loop;
 
@@ -505,7 +508,7 @@ package body Ghdlxml is
                            return Boolean;
    function Get_Short_Help (Cmd : Command_File_To_Xml) return String;
 
-   procedure Perform_Action (Cmd : in out Command_File_To_Xml;
+   procedure Perform_Action (Cmd : Command_File_To_Xml;
                              Files_Name : Argument_List);
 
    function Decode_Command (Cmd : Command_File_To_Xml; Name : String)
@@ -524,7 +527,7 @@ package body Ghdlxml is
    end Get_Short_Help;
 
    procedure Perform_Action
-     (Cmd : in out Command_File_To_Xml; Files_Name : Argument_List)
+     (Cmd : Command_File_To_Xml; Files_Name : Argument_List)
    is
       pragma Unreferenced (Cmd);
 
@@ -553,7 +556,7 @@ package body Ghdlxml is
             return;
          end if;
          Files (I).Fe := File;
-         Files (I).Design_File := Libraries.Load_File (File);
+         Files (I).Design_File := Load_File (File);
          if Files (I).Design_File = Null_Iir then
             return;
          end if;

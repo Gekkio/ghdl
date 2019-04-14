@@ -16,7 +16,7 @@
 --  Software Foundation, 59 Temple Place - Suite 330, Boston, MA
 --  02111-1307, USA.
 with Ada.Unchecked_Conversion;
-with Ada.Text_IO;
+with Logging; use Logging;
 with Nodes; use Nodes;
 with Lists; use Lists;
 with Nodes_Meta; use Nodes_Meta;
@@ -57,7 +57,6 @@ package body Iirs is
    --  Statistics.
    procedure Disp_Stats
    is
-      use Ada.Text_IO;
       type Num_Array is array (Iir_Kind) of Natural;
       Num : Num_Array := (others => 0);
       type Format_Array is array (Format_Type) of Natural;
@@ -77,17 +76,17 @@ package body Iirs is
          I := Next_Node (I);
       end loop;
 
-      Put_Line ("Stats per iir_kind:");
+      Log_Line ("Stats per iir_kind:");
       for J in Iir_Kind loop
          if Num (J) /= 0 then
-            Put_Line (' ' & Iir_Kind'Image (J) & ':'
-                      & Natural'Image (Num (J)));
+            Log_Line (' ' & Iir_Kind'Image (J) & ':'
+                        & Natural'Image (Num (J)));
          end if;
       end loop;
-      Put_Line ("Stats per formats:");
+      Log_Line ("Stats per formats:");
       for J in Format_Type loop
-         Put_Line (' ' & Format_Type'Image (J) & ':'
-                   & Natural'Image (Formats (J)));
+         Log_Line (' ' & Format_Type'Image (J) & ':'
+                     & Natural'Image (Formats (J)));
       end loop;
    end Disp_Stats;
 
@@ -207,6 +206,11 @@ package body Iirs is
    begin
       return Iir (P);
    end Source_Ptr_To_Iir;
+
+   function Iir_To_Source_File_Entry is new Ada.Unchecked_Conversion
+     (Source => Iir, Target => Source_File_Entry);
+   function Source_File_Entry_To_Iir is new Ada.Unchecked_Conversion
+     (Source => Source_File_Entry, Target => Iir);
 
    function Boolean_To_Iir_Delay_Mechanism is new Ada.Unchecked_Conversion
      (Source => Boolean, Target => Iir_Delay_Mechanism);
@@ -337,6 +341,7 @@ package body Iirs is
            | Iir_Kind_Negation_Operator
            | Iir_Kind_Absolute_Operator
            | Iir_Kind_Not_Operator
+           | Iir_Kind_Implicit_Condition_Operator
            | Iir_Kind_Condition_Operator
            | Iir_Kind_Reduction_And_Operator
            | Iir_Kind_Reduction_Or_Operator
@@ -418,11 +423,11 @@ package body Iirs is
            | Iir_Kind_Selected_Name
            | Iir_Kind_Operator_Symbol
            | Iir_Kind_Reference_Name
-           | Iir_Kind_Selected_By_All_Name
-           | Iir_Kind_Parenthesis_Name
            | Iir_Kind_External_Constant_Name
            | Iir_Kind_External_Signal_Name
            | Iir_Kind_External_Variable_Name
+           | Iir_Kind_Selected_By_All_Name
+           | Iir_Kind_Parenthesis_Name
            | Iir_Kind_Package_Pathname
            | Iir_Kind_Absolute_Pathname
            | Iir_Kind_Relative_Pathname
@@ -596,6 +601,22 @@ package body Iirs is
                      "no field Analysis_Time_Stamp");
       Set_Field3 (Design, Time_Stamp_Id_To_Iir (Stamp));
    end Set_Analysis_Time_Stamp;
+
+   function Get_Design_File_Source (Design : Iir) return Source_File_Entry is
+   begin
+      pragma Assert (Design /= Null_Iir);
+      pragma Assert (Has_Design_File_Source (Get_Kind (Design)),
+                     "no field Design_File_Source");
+      return Iir_To_Source_File_Entry (Get_Field7 (Design));
+   end Get_Design_File_Source;
+
+   procedure Set_Design_File_Source (Design : Iir; Sfe : Source_File_Entry) is
+   begin
+      pragma Assert (Design /= Null_Iir);
+      pragma Assert (Has_Design_File_Source (Get_Kind (Design)),
+                     "no field Design_File_Source");
+      Set_Field7 (Design, Source_File_Entry_To_Iir (Sfe));
+   end Set_Design_File_Source;
 
    function Get_Library (File : Iir_Design_File) return Iir is
    begin
@@ -1484,6 +1505,22 @@ package body Iirs is
       Set_Field3 (We, An_Iir);
    end Set_Time;
 
+   function Get_Choice_Order (Choice : Iir) return Int32 is
+   begin
+      pragma Assert (Choice /= Null_Iir);
+      pragma Assert (Has_Choice_Order (Get_Kind (Choice)),
+                     "no field Choice_Order");
+      return Int32'Val (Get_Field1 (Choice));
+   end Get_Choice_Order;
+
+   procedure Set_Choice_Order (Choice : Iir; Pos : Int32) is
+   begin
+      pragma Assert (Choice /= Null_Iir);
+      pragma Assert (Has_Choice_Order (Get_Kind (Choice)),
+                     "no field Choice_Order");
+      Set_Field1 (Choice, Int32'Pos (Pos));
+   end Set_Choice_Order;
+
    function Get_Associated_Expr (Target : Iir) return Iir is
    begin
       pragma Assert (Target /= Null_Iir);
@@ -1595,6 +1632,22 @@ package body Iirs is
                      "no field Same_Alternative_Flag");
       Set_Flag1 (Target, Val);
    end Set_Same_Alternative_Flag;
+
+   function Get_Element_Type_Flag (Target : Iir) return Boolean is
+   begin
+      pragma Assert (Target /= Null_Iir);
+      pragma Assert (Has_Element_Type_Flag (Get_Kind (Target)),
+                     "no field Element_Type_Flag");
+      return Get_Flag2 (Target);
+   end Get_Element_Type_Flag;
+
+   procedure Set_Element_Type_Flag (Target : Iir; Val : Boolean) is
+   begin
+      pragma Assert (Target /= Null_Iir);
+      pragma Assert (Has_Element_Type_Flag (Get_Kind (Target)),
+                     "no field Element_Type_Flag");
+      Set_Flag2 (Target, Val);
+   end Set_Element_Type_Flag;
 
    function Get_Architecture (Target : Iir_Entity_Aspect_Entity) return Iir is
    begin
@@ -1772,6 +1825,22 @@ package body Iirs is
                      "no field Package_Body");
       Set_Field5 (Pkg, Decl);
    end Set_Package_Body;
+
+   function Get_Instance_Package_Body (Pkg : Iir) return Iir is
+   begin
+      pragma Assert (Pkg /= Null_Iir);
+      pragma Assert (Has_Instance_Package_Body (Get_Kind (Pkg)),
+                     "no field Instance_Package_Body");
+      return Get_Field5 (Pkg);
+   end Get_Instance_Package_Body;
+
+   procedure Set_Instance_Package_Body (Pkg : Iir; Decl : Iir) is
+   begin
+      pragma Assert (Pkg /= Null_Iir);
+      pragma Assert (Has_Instance_Package_Body (Get_Kind (Pkg)),
+                     "no field Instance_Package_Body");
+      Set_Field5 (Pkg, Decl);
+   end Set_Instance_Package_Body;
 
    function Get_Need_Body (Decl : Iir_Package_Declaration) return Boolean is
    begin
@@ -2456,54 +2525,6 @@ package body Iirs is
       Set_Field4 (Target, Iir_Index32'Pos (Pos));
    end Set_Element_Position;
 
-   function Get_Base_Element_Declaration (Target : Iir) return Iir is
-   begin
-      pragma Assert (Target /= Null_Iir);
-      pragma Assert (Has_Base_Element_Declaration (Get_Kind (Target)),
-                     "no field Base_Element_Declaration");
-      return Get_Field2 (Target);
-   end Get_Base_Element_Declaration;
-
-   procedure Set_Base_Element_Declaration (Target : Iir; El : Iir) is
-   begin
-      pragma Assert (Target /= Null_Iir);
-      pragma Assert (Has_Base_Element_Declaration (Get_Kind (Target)),
-                     "no field Base_Element_Declaration");
-      Set_Field2 (Target, El);
-   end Set_Base_Element_Declaration;
-
-   function Get_Element_Declaration (Target : Iir) return Iir is
-   begin
-      pragma Assert (Target /= Null_Iir);
-      pragma Assert (Has_Element_Declaration (Get_Kind (Target)),
-                     "no field Element_Declaration");
-      return Get_Field5 (Target);
-   end Get_Element_Declaration;
-
-   procedure Set_Element_Declaration (Target : Iir; El : Iir) is
-   begin
-      pragma Assert (Target /= Null_Iir);
-      pragma Assert (Has_Element_Declaration (Get_Kind (Target)),
-                     "no field Element_Declaration");
-      Set_Field5 (Target, El);
-   end Set_Element_Declaration;
-
-   function Get_Selected_Element (Target : Iir) return Iir is
-   begin
-      pragma Assert (Target /= Null_Iir);
-      pragma Assert (Has_Selected_Element (Get_Kind (Target)),
-                     "no field Selected_Element");
-      return Get_Field2 (Target);
-   end Get_Selected_Element;
-
-   procedure Set_Selected_Element (Target : Iir; El : Iir) is
-   begin
-      pragma Assert (Target /= Null_Iir);
-      pragma Assert (Has_Selected_Element (Get_Kind (Target)),
-                     "no field Selected_Element");
-      Set_Field2 (Target, El);
-   end Set_Selected_Element;
-
    function Get_Use_Clause_Chain (Target : Iir) return Iir is
    begin
       pragma Assert (Target /= Null_Iir);
@@ -3160,6 +3181,22 @@ package body Iirs is
                      "no field Elements_Declaration_List");
       Set_Field1 (Decl, Iir_Flist_To_Iir (List));
    end Set_Elements_Declaration_List;
+
+   function Get_Owned_Elements_Chain (Atype : Iir) return Iir is
+   begin
+      pragma Assert (Atype /= Null_Iir);
+      pragma Assert (Has_Owned_Elements_Chain (Get_Kind (Atype)),
+                     "no field Owned_Elements_Chain");
+      return Get_Field6 (Atype);
+   end Get_Owned_Elements_Chain;
+
+   procedure Set_Owned_Elements_Chain (Atype : Iir; Chain : Iir) is
+   begin
+      pragma Assert (Atype /= Null_Iir);
+      pragma Assert (Has_Owned_Elements_Chain (Get_Kind (Atype)),
+                     "no field Owned_Elements_Chain");
+      Set_Field6 (Atype, Chain);
+   end Set_Owned_Elements_Chain;
 
    function Get_Designated_Type (Target : Iir) return Iir is
    begin
@@ -4122,6 +4159,23 @@ package body Iirs is
                      "no field Uninstantiated_Package_Decl");
       Set_Field9 (Inst, Pkg);
    end Set_Uninstantiated_Package_Decl;
+
+   function Get_Instance_Source_File (Inst : Iir) return Source_File_Entry is
+   begin
+      pragma Assert (Inst /= Null_Iir);
+      pragma Assert (Has_Instance_Source_File (Get_Kind (Inst)),
+                     "no field Instance_Source_File");
+      return Iir_To_Source_File_Entry (Get_Field10 (Inst));
+   end Get_Instance_Source_File;
+
+   procedure Set_Instance_Source_File (Inst : Iir; File : Source_File_Entry)
+   is
+   begin
+      pragma Assert (Inst /= Null_Iir);
+      pragma Assert (Has_Instance_Source_File (Get_Kind (Inst)),
+                     "no field Instance_Source_File");
+      Set_Field10 (Inst, Source_File_Entry_To_Iir (File));
+   end Set_Instance_Source_File;
 
    function Get_Generate_Block_Configuration (Target : Iir) return Iir is
    begin

@@ -26,6 +26,7 @@ with Libraries;
 with Name_Table;
 with Simul.File_Operation;
 with Iir_Chains; use Iir_Chains;
+with Sem_Lib; use Sem_Lib;
 with Simul.Annotations; use Simul.Annotations;
 with Simul.Elaboration.AMS; use Simul.Elaboration.AMS;
 with Areapools; use Areapools;
@@ -108,7 +109,7 @@ package body Simul.Elaboration is
    is
       Slot : constant Object_Slot_Type := Get_Info (Decl).Slot;
    begin
-      Create_Object (Instance, Slot, 2);
+      Create_Object (Instance, Slot, 3);
    end Create_Signal;
 
    -- Create a new signal, using DEFAULT as initial value.
@@ -155,17 +156,19 @@ package body Simul.Elaboration is
          return Res;
       end Create_Signal;
 
+      Slot : constant Object_Slot_Type := Get_Info (Signal).Slot;
       Sig : Iir_Value_Literal_Acc;
       Def : Iir_Value_Literal_Acc;
-      Slot : constant Object_Slot_Type := Get_Info (Signal).Slot;
    begin
       Sig := Create_Signal (Default);
       Def := Unshare (Default, Global_Pool'Access);
       Block.Objects (Slot) := Sig;
       Block.Objects (Slot + 1) := Def;
+      Block.Objects (Slot + 2) := Unshare (Default, Global_Pool'Access);
 
       case Get_Kind (Signal) is
          when Iir_Kind_Interface_Signal_Declaration =>
+            --  Driver.
             case Get_Mode (Signal) is
                when Iir_Unknown_Mode =>
                   raise Internal_Error;
@@ -311,7 +314,7 @@ package body Simul.Elaboration is
       Create_Signal (Instance, Signal);
       Instance.Objects (Info.Slot) := Sig;
 
-      Init := Execute_Signal_Init_Value (Instance, Get_Prefix (Signal));
+      Init := Execute_Signal_Name (Instance, Get_Prefix (Signal), Signal_Val);
       Init := Unshare (Init, Global_Pool'Access); --  Create a full copy.
       Instance.Objects (Info.Slot + 1) := Init;
 
@@ -347,11 +350,11 @@ package body Simul.Elaboration is
          Uninst_Scope => null,
          Up_Block => Father,
          Label => Stmt,
+         Bod => Null_Iir,
          Stmt => Obj,
          Parent => Father,
          Children => null,
          Brother => null,
-         Ports_Map => Null_Iir,
          Marker => Empty_Marker,
          Objects => (others => null),
          Elab_Objects => 0,
@@ -526,7 +529,7 @@ package body Simul.Elaboration is
                        (Get_Need_Body (Library_Unit)
                           or else Get_Date (Body_Design) /= Date_Obsolete)
                      then
-                        Libraries.Load_Design_Unit (Body_Design, Design_Unit);
+                        Load_Design_Unit (Body_Design, Design_Unit);
                      else
                         Body_Design := Null_Iir;
                      end if;
@@ -588,14 +591,18 @@ package body Simul.Elaboration is
    function Create_Protected_Object (Block: Block_Instance_Acc; Decl: Iir)
                                     return Iir_Value_Literal_Acc
    is
-      Bod : constant Iir := Get_Protected_Type_Body (Decl);
+      Bod : constant Iir := Execution.Get_Protected_Type_Body_Origin (Decl);
+      Bod_Info : constant Sim_Info_Acc := Get_Info (Bod);
       Inst : Block_Instance_Acc;
       Res : Iir_Value_Literal_Acc;
    begin
       Protected_Table.Increment_Last;
       Res := Create_Protected_Value (Protected_Table.Last);
 
-      Inst := Create_Subprogram_Instance (Block, null, Bod);
+      Inst := Create_Subprogram_Instance (Block, null, Decl);
+      if Bod_Info /= Get_Info (Decl) then
+         Inst.Uninst_Scope := Bod_Info;
+      end if;
       Protected_Table.Table (Res.Prot) := Inst;
 
       --  Temporary put the instancce on the stack in case of function calls
@@ -872,10 +879,9 @@ package body Simul.Elaboration is
    procedure Elaborate_Type_Range
      (Instance : Block_Instance_Acc; Rc: Iir_Range_Expression)
    is
-      Range_Info : Sim_Info_Acc;
+      Range_Info : constant Sim_Info_Acc := Get_Info (Rc);
       Val : Iir_Value_Literal_Acc;
    begin
-      Range_Info := Get_Info (Rc);
       Create_Object (Instance, Rc);
       Val := Create_Range_Value
         (Execute_Expression (Instance, Get_Left_Limit (Rc)),
@@ -1246,13 +1252,11 @@ package body Simul.Elaboration is
       Assoc : Iir_Association_Element_By_Expression;
       Inter : Iir)
    is
-      Formal : Iir;
-      Actual : Iir;
+      Formal : constant Iir := Get_Association_Formal (Assoc, Inter);
+      Actual : constant Iir := Get_Actual (Assoc);
       Local_Expr : Iir_Value_Literal_Acc;
       Formal_Expr : Iir_Value_Literal_Acc;
    begin
-      Formal := Get_Association_Formal (Assoc, Inter);
-      Actual := Get_Actual (Assoc);
       Formal_Expr := Execute_Name (Formal_Instance, Formal, True);
       Formal_Expr := Unshare_Bounds (Formal_Expr, Global_Pool'Access);
       if Actual_Expr = null then
@@ -1286,9 +1290,6 @@ package body Simul.Elaboration is
       Actual : Iir;
       Formal : Iir;
    begin
-      pragma Assert (Formal_Instance.Ports_Map = Null_Iir);
-      Formal_Instance.Ports_Map := Map;
-
       if Ports = Null_Iir then
          return;
       end if;
@@ -1324,8 +1325,8 @@ package body Simul.Elaboration is
                   Formal := Get_Association_Formal (Assoc, Inter);
                   if Is_Signal_Name (Actual) then
                      --  Association with a signal
-                     Init_Expr := Execute_Signal_Init_Value
-                       (Actual_Instance, Actual);
+                     Init_Expr := Execute_Signal_Name
+                       (Actual_Instance, Actual, Signal_Val);
                      Implicit_Array_Conversion
                        (Formal_Instance, Init_Expr, Get_Type (Formal), Actual);
                      Init_Expr := Unshare_Bounds
@@ -1376,12 +1377,17 @@ package body Simul.Elaboration is
                            Val := Execute_Expression_With_Type
                              (Formal_Instance, Default_Value,
                               Get_Type (Inter));
-                           Store (Formal_Instance.Objects (Slot + 1), Val);
+                           Val := Unshare (Val, Global_Pool'Access);
                         else
+                           Val := Unshare (Init_Expr, Global_Pool'Access);
                            Init_To_Default
-                             (Formal_Instance.Objects (Slot + 1),
-                              Formal_Instance, Get_Type (Inter));
+                             (Val, Formal_Instance, Get_Type (Inter));
                         end if;
+                        Formal_Instance.Objects (Slot + 2) := Val;
+                        Store (Formal_Instance.Objects (Slot + 1), Val);
+                     else
+                        -- Always set a value to the driver.
+                        Formal_Instance.Objects (Slot + 2) := Init_Expr;
                      end if;
                   end;
                else
@@ -1488,7 +1494,7 @@ package body Simul.Elaboration is
         (Ninstance, Get_Concurrent_Statement_Chain (Block));
       --  Elaboration of a block statement may occur under the control of a
       --  configuration declaration.
-      --  In particular, a block configuration, wether implicit or explicit,
+      --  In particular, a block configuration, whether implicit or explicit,
       --  within a configuration declaration may supply a sequence of
       --  additionnal implicit configuration specification to be applied
       --  during the elaboration of the corresponding block statement.
@@ -1498,10 +1504,11 @@ package body Simul.Elaboration is
       --  is elaborated as part of the block declarative part, following all
       --  other declarative items in that part.
       --  The sequence of implicit configuration specifications supplied by a
-      --  block configuration, wether implicit or explicit, consists of each of
-      --  the configuration specifications implied by component configurations
-      --  occurring immediatly within the block configuration, and in the
-      --  order in which the component configurations themselves appear.
+      --  block configuration, whether implicit or explicit, consists of each
+      --  of the configuration specifications implied by component
+      --  configurations occurring immediatly within the block configuration,
+      --  and in the order in which the component configurations themselves
+      --  appear.
       -- FIXME.
    end Elaborate_Block_Statement;
 
@@ -1833,6 +1840,16 @@ package body Simul.Elaboration is
       --  Create the process
       --  Create the finalizer
       PSL_Table.Append (PSL_Entry'(Instance, Stmt, null, False));
+
+      if Get_Kind (Stmt) = Iir_Kind_Psl_Endpoint_Declaration then
+         declare
+            Info : constant Sim_Info_Acc := Get_Info (Stmt);
+         begin
+            Create_Object (Instance, Info.Slot);
+            Instance.Objects (Info.Slot) :=
+              Unshare (Lit_Boolean_False, Instance_Pool);
+         end;
+      end if;
    end Elaborate_Psl_Directive;
 
    --  LRM93 §12.4  Elaboration of a Statement Part.
@@ -1880,7 +1897,8 @@ package body Simul.Elaboration is
                null;
 
             when Iir_Kind_Psl_Cover_Statement
-              | Iir_Kind_Psl_Assert_Statement =>
+              | Iir_Kind_Psl_Assert_Statement
+              | Iir_Kind_Psl_Endpoint_Declaration =>
                Elaborate_Psl_Directive (Instance, Stmt);
 
             when Iir_Kind_Concurrent_Simple_Signal_Assignment =>
@@ -2070,7 +2088,7 @@ package body Simul.Elaboration is
             end if;
             Arch_Name := Get_Identifier (Arch);
          end if;
-         Arch_Design := Libraries.Load_Secondary_Unit
+         Arch_Design := Load_Secondary_Unit
            (Get_Design_Unit (Entity), Arch_Name, Stmt);
          if Arch_Design = Null_Iir then
             Error_Msg_Elab
@@ -2984,11 +3002,11 @@ package body Simul.Elaboration is
                                  Uninst_Scope => null,
                                  Up_Block => null,
                                  Label => Null_Iir,
+                                 Bod => Null_Iir,
                                  Stmt => Null_Iir,
                                  Parent => null,
                                  Children => null,
                                  Brother => null,
-                                 Ports_Map => Null_Iir,
                                  Marker => Empty_Marker,
                                  Actuals_Ref => null,
                                  Result => null,

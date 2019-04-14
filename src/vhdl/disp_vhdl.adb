@@ -159,6 +159,7 @@ package body Disp_Vhdl is
       case Id is
          when Name_Id_Operators
            | Name_Word_Operators
+           | Name_Logical_Operators
            | Name_Xnor
            | Name_Shift_Operators =>
             Put ("""");
@@ -2122,6 +2123,11 @@ package body Disp_Vhdl is
 
    procedure Disp_Monadic_Operator (Expr: Iir) is
    begin
+      if Get_Kind (Expr) = Iir_Kind_Implicit_Condition_Operator then
+         Disp_Expression (Get_Operand (Expr));
+         return;
+      end if;
+
       Put (Name_Table.Image (Iirs_Utils.Get_Operator_Name (Expr)));
       Put (' ');
       if Flag_Parenthesis then
@@ -2541,23 +2547,26 @@ package body Disp_Vhdl is
       Put (")");
    end Disp_Indexed_Name;
 
+   procedure Disp_A_Choice (Choice : Iir) is
+   begin
+      case Iir_Kinds_Choice (Get_Kind (Choice)) is
+         when Iir_Kind_Choice_By_Others =>
+            Put ("others");
+         when Iir_Kind_Choice_By_None =>
+            null;
+         when Iir_Kind_Choice_By_Expression =>
+            Disp_Expression (Get_Choice_Expression (Choice));
+         when Iir_Kind_Choice_By_Range =>
+            Disp_Range (Get_Choice_Range (Choice));
+         when Iir_Kind_Choice_By_Name =>
+            Disp_Name_Of (Get_Choice_Name (Choice));
+      end case;
+   end Disp_A_Choice;
+
    procedure Disp_Choice (Choice: in out Iir) is
    begin
       loop
-         case Get_Kind (Choice) is
-            when Iir_Kind_Choice_By_Others =>
-               Put ("others");
-            when Iir_Kind_Choice_By_None =>
-               null;
-            when Iir_Kind_Choice_By_Expression =>
-               Disp_Expression (Get_Choice_Expression (Choice));
-            when Iir_Kind_Choice_By_Range =>
-               Disp_Range (Get_Choice_Range (Choice));
-            when Iir_Kind_Choice_By_Name =>
-               Disp_Name_Of (Get_Choice_Name (Choice));
-            when others =>
-               Error_Kind ("disp_choice", Choice);
-         end case;
+         Disp_A_Choice (Choice);
          Choice := Get_Chain (Choice);
          exit when Choice = Null_Iir;
          exit when Get_Same_Alternative_Flag (Choice) = False;
@@ -2570,9 +2579,10 @@ package body Disp_Vhdl is
    procedure Disp_Aggregate_1
      (Aggr: Iir_Aggregate; Index : Positive; El_Type : Iir)
    is
-      Indent: Count;
-      Assoc: Iir;
+      Indent : Count;
+      Assoc : Iir;
       Expr : Iir;
+      Is_First : Boolean;
    begin
       Indent := Col + 1;
       if Indent > Line_Length - 10 then
@@ -2580,10 +2590,25 @@ package body Disp_Vhdl is
       end if;
       Put ("(");
       Assoc := Get_Association_Choices_Chain (Aggr);
-      loop
+      Is_First := True;
+      while Assoc /= Null_Iir loop
+         if Is_First then
+            Is_First := False;
+         else
+            Put (", ");
+         end if;
+         pragma Assert (not Get_Same_Alternative_Flag (Assoc));
          Expr := Get_Associated_Expr (Assoc);
+         Disp_A_Choice (Assoc);
          if Get_Kind (Assoc) /= Iir_Kind_Choice_By_None then
-            Disp_Choice (Assoc);
+            Assoc := Get_Chain (Assoc);
+            while Assoc /= Null_Iir
+              and then Get_Same_Alternative_Flag (Assoc)
+            loop
+               Put (" | ");
+               Disp_A_Choice (Assoc);
+               Assoc := Get_Chain (Assoc);
+            end loop;
             Put (" => ");
          else
             Assoc := Get_Chain (Assoc);
@@ -2601,8 +2626,6 @@ package body Disp_Vhdl is
             end if;
             Disp_Expression (Expr);
          end if;
-         exit when Assoc = Null_Iir;
-         Put (", ");
       end loop;
       Put (")");
    end Disp_Aggregate_1;
@@ -2866,7 +2889,7 @@ package body Disp_Vhdl is
          when Iir_Kind_Selected_Element =>
             Disp_Expression (Get_Prefix (Expr));
             Put (".");
-            Disp_Name_Of (Get_Selected_Element (Expr));
+            Disp_Name_Of (Get_Named_Entity (Expr));
          when Iir_Kind_Implicit_Dereference =>
             Disp_Expression (Get_Prefix (Expr));
          when Iir_Kind_Dereference =>
@@ -3152,7 +3175,6 @@ package body Disp_Vhdl is
    procedure Disp_PSL_NFA (N : PSL.Nodes.NFA)
    is
       use PSL.NFAs;
-      use PSL.Nodes;
 
       procedure Disp_State (S : NFA_State) is
          Str : constant String := Int32'Image (Get_State_Label (S));

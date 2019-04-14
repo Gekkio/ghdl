@@ -49,6 +49,7 @@ package Nodes_Meta is
       Type_Number_Base_Type,
       Type_PSL_NFA,
       Type_PSL_Node,
+      Type_Source_File_Entry,
       Type_Source_Ptr,
       Type_String8_Id,
       Type_Time_Stamp_Id,
@@ -64,6 +65,7 @@ package Nodes_Meta is
       Field_Library_Declaration,
       Field_File_Checksum,
       Field_Analysis_Time_Stamp,
+      Field_Design_File_Source,
       Field_Library,
       Field_File_Dependence_List,
       Field_Design_File_Filename,
@@ -115,6 +117,7 @@ package Nodes_Meta is
       Field_After_Drivers_Flag,
       Field_We_Value,
       Field_Time,
+      Field_Choice_Order,
       Field_Associated_Expr,
       Field_Associated_Block,
       Field_Associated_Chain,
@@ -122,6 +125,7 @@ package Nodes_Meta is
       Field_Choice_Expression,
       Field_Choice_Range,
       Field_Same_Alternative_Flag,
+      Field_Element_Type_Flag,
       Field_Architecture,
       Field_Block_Specification,
       Field_Prev_Block_Configuration,
@@ -133,6 +137,7 @@ package Nodes_Meta is
       Field_Entity_Name,
       Field_Package,
       Field_Package_Body,
+      Field_Instance_Package_Body,
       Field_Need_Body,
       Field_Macro_Expanded_Flag,
       Field_Need_Instance_Bodies,
@@ -174,9 +179,6 @@ package Nodes_Meta is
       Field_File_Logical_Name,
       Field_File_Open_Kind,
       Field_Element_Position,
-      Field_Base_Element_Declaration,
-      Field_Element_Declaration,
-      Field_Selected_Element,
       Field_Use_Clause_Chain,
       Field_Context_Reference_Chain,
       Field_Selected_Name,
@@ -218,6 +220,7 @@ package Nodes_Meta is
       Field_Index_Constraint_List,
       Field_Array_Element_Constraint,
       Field_Elements_Declaration_List,
+      Field_Owned_Elements_Chain,
       Field_Designated_Type,
       Field_Designated_Subtype_Indication,
       Field_Index_List,
@@ -278,6 +281,7 @@ package Nodes_Meta is
       Field_Block_Header,
       Field_Uninstantiated_Package_Name,
       Field_Uninstantiated_Package_Decl,
+      Field_Instance_Source_File,
       Field_Generate_Block_Configuration,
       Field_Generate_Statement_Body,
       Field_Alternative_Label,
@@ -554,6 +558,11 @@ package Nodes_Meta is
    procedure Set_PSL_Node
       (N : Iir; F : Fields_Enum; V: PSL_Node);
 
+   function Get_Source_File_Entry
+      (N : Iir; F : Fields_Enum) return Source_File_Entry;
+   procedure Set_Source_File_Entry
+      (N : Iir; F : Fields_Enum; V: Source_File_Entry);
+
    function Get_Source_Ptr
       (N : Iir; F : Fields_Enum) return Source_Ptr;
    procedure Set_Source_Ptr
@@ -584,6 +593,7 @@ package Nodes_Meta is
    function Has_Library_Declaration (K : Iir_Kind) return Boolean;
    function Has_File_Checksum (K : Iir_Kind) return Boolean;
    function Has_Analysis_Time_Stamp (K : Iir_Kind) return Boolean;
+   function Has_Design_File_Source (K : Iir_Kind) return Boolean;
    function Has_Library (K : Iir_Kind) return Boolean;
    function Has_File_Dependence_List (K : Iir_Kind) return Boolean;
    function Has_Design_File_Filename (K : Iir_Kind) return Boolean;
@@ -636,6 +646,7 @@ package Nodes_Meta is
    function Has_After_Drivers_Flag (K : Iir_Kind) return Boolean;
    function Has_We_Value (K : Iir_Kind) return Boolean;
    function Has_Time (K : Iir_Kind) return Boolean;
+   function Has_Choice_Order (K : Iir_Kind) return Boolean;
    function Has_Associated_Expr (K : Iir_Kind) return Boolean;
    function Has_Associated_Block (K : Iir_Kind) return Boolean;
    function Has_Associated_Chain (K : Iir_Kind) return Boolean;
@@ -643,6 +654,7 @@ package Nodes_Meta is
    function Has_Choice_Expression (K : Iir_Kind) return Boolean;
    function Has_Choice_Range (K : Iir_Kind) return Boolean;
    function Has_Same_Alternative_Flag (K : Iir_Kind) return Boolean;
+   function Has_Element_Type_Flag (K : Iir_Kind) return Boolean;
    function Has_Architecture (K : Iir_Kind) return Boolean;
    function Has_Block_Specification (K : Iir_Kind) return Boolean;
    function Has_Prev_Block_Configuration (K : Iir_Kind) return Boolean;
@@ -654,6 +666,7 @@ package Nodes_Meta is
    function Has_Entity_Name (K : Iir_Kind) return Boolean;
    function Has_Package (K : Iir_Kind) return Boolean;
    function Has_Package_Body (K : Iir_Kind) return Boolean;
+   function Has_Instance_Package_Body (K : Iir_Kind) return Boolean;
    function Has_Need_Body (K : Iir_Kind) return Boolean;
    function Has_Macro_Expanded_Flag (K : Iir_Kind) return Boolean;
    function Has_Need_Instance_Bodies (K : Iir_Kind) return Boolean;
@@ -695,9 +708,6 @@ package Nodes_Meta is
    function Has_File_Logical_Name (K : Iir_Kind) return Boolean;
    function Has_File_Open_Kind (K : Iir_Kind) return Boolean;
    function Has_Element_Position (K : Iir_Kind) return Boolean;
-   function Has_Base_Element_Declaration (K : Iir_Kind) return Boolean;
-   function Has_Element_Declaration (K : Iir_Kind) return Boolean;
-   function Has_Selected_Element (K : Iir_Kind) return Boolean;
    function Has_Use_Clause_Chain (K : Iir_Kind) return Boolean;
    function Has_Context_Reference_Chain (K : Iir_Kind) return Boolean;
    function Has_Selected_Name (K : Iir_Kind) return Boolean;
@@ -741,6 +751,7 @@ package Nodes_Meta is
    function Has_Index_Constraint_List (K : Iir_Kind) return Boolean;
    function Has_Array_Element_Constraint (K : Iir_Kind) return Boolean;
    function Has_Elements_Declaration_List (K : Iir_Kind) return Boolean;
+   function Has_Owned_Elements_Chain (K : Iir_Kind) return Boolean;
    function Has_Designated_Type (K : Iir_Kind) return Boolean;
    function Has_Designated_Subtype_Indication (K : Iir_Kind)
       return Boolean;
@@ -803,6 +814,7 @@ package Nodes_Meta is
    function Has_Block_Header (K : Iir_Kind) return Boolean;
    function Has_Uninstantiated_Package_Name (K : Iir_Kind) return Boolean;
    function Has_Uninstantiated_Package_Decl (K : Iir_Kind) return Boolean;
+   function Has_Instance_Source_File (K : Iir_Kind) return Boolean;
    function Has_Generate_Block_Configuration (K : Iir_Kind) return Boolean;
    function Has_Generate_Statement_Body (K : Iir_Kind) return Boolean;
    function Has_Alternative_Label (K : Iir_Kind) return Boolean;

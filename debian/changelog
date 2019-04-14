@@ -1,3 +1,9 @@
+ghdl (0.36-0~gekkio1~cosmic1) cosmic; urgency=medium
+
+  * Pull 0.36 from upstream
+
+ -- Joonas Javanainen <joonas.javanainen@gmail.com>  Sun, 14 Apr 2019 13:58:11 +0300
+
 ghdl (0.35-0~gekkio1~cosmic3) cosmic; urgency=medium
 
   * Add default clang dependency

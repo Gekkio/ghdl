@@ -31,6 +31,7 @@ with Iir_Chains; use Iir_Chains;
 with Sem_Types;
 with Sem_Stmts; use Sem_Stmts;
 with Sem_Assocs; use Sem_Assocs;
+with Sem_Decls;
 with Xrefs; use Xrefs;
 
 package body Sem_Expr is
@@ -530,8 +531,20 @@ package body Sem_Expr is
          Left := Sem_Expression_Ov (Left, Base_Type);
 
          if Left = Null_Iir or else Right = Null_Iir then
-            --  Error.
-            return Null_Iir;
+            if A_Type /= Null_Iir then
+               --  Can continue with the error.
+               if Left = Null_Iir then
+                  Left := Create_Error_Expr
+                    (Get_Left_Limit_Expr (Expr), A_Type);
+               end if;
+               if Right = Null_Iir then
+                  Right := Create_Error_Expr
+                    (Get_Right_Limit_Expr (Expr), A_Type);
+               end if;
+            else
+               --  Error.
+               return Null_Iir;
+            end if;
          end if;
 
          Left_Type := Get_Type (Left);
@@ -1161,7 +1174,7 @@ package body Sem_Expr is
       Subprg : constant Iir := Get_Current_Subprogram;
    begin
       Set_Function_Call_Staticness (Expr, Imp);
-      Mark_Subprogram_Used (Imp);
+      Sem_Decls.Mark_Subprogram_Used (Imp);
 
       --  Check purity/wait/passive.
 
@@ -1228,13 +1241,15 @@ package body Sem_Expr is
          A_Func := Get_Element (Imp_It);
 
          case Get_Kind (A_Func) is
-            when Iir_Kinds_Functions_And_Literals =>
+            when Iir_Kinds_Functions_And_Literals
+              | Iir_Kind_Interface_Function_Declaration =>
                if not Is_Func_Call then
                   --  The identifier of a function call must be a function or
                   --  an enumeration literal.
                   goto Continue;
                end if;
-            when Iir_Kind_Procedure_Declaration =>
+            when Iir_Kind_Procedure_Declaration
+              | Iir_Kind_Interface_Procedure_Declaration =>
                if Is_Func_Call then
                   --  The identifier of a procedure call must be a procedure.
                   goto Continue;
@@ -1781,8 +1796,7 @@ package body Sem_Expr is
             Decl := Get_Non_Alias_Declaration (Interpretation);
 
             --  It is compatible with operand types ?
-            pragma Assert (Kind_In (Decl, Iir_Kind_Function_Declaration,
-                                    Iir_Kind_Interface_Function_Declaration));
+            pragma Assert (Is_Function_Declaration (Decl));
 
             --  LRM08 12.3 Visibility
             --  [...] or all visible declarations denote the same named entity.
@@ -1849,7 +1863,14 @@ package body Sem_Expr is
          --  The list of possible implementations was computed.
          case Get_Nbr_Elements (Overload_List) is
             when 0 =>
-               Error_Msg_Sem (+Expr, "no function declarations for %n", +Expr);
+               if Get_Kind (Expr) = Iir_Kind_Implicit_Condition_Operator then
+                  --  TODO: display expression type.
+                  Error_Msg_Sem (+Expr, "cannot convert expression to boolean "
+                                   & "(no ""??"" found)");
+               else
+                  Error_Msg_Sem (+Expr,
+                                 "no function declarations for %n", +Expr);
+               end if;
                Destroy_Iir_List (Overload_List);
                return Null_Iir;
 
@@ -1997,15 +2018,21 @@ package body Sem_Expr is
    begin
       for I in 1 .. Len loop
          Ch := Str_Table.Char_String8 (Id, I);
-         Res := Map (Ch);
-         if Res = No_Pos then
-            El := Find_Literal (El_Type, Ch);
-            if El = Null_Iir then
-               Res := 0;
-            else
+         if Ch not in Map'Range then
+            --  Invalid character.
+            pragma Assert (Flags.Flag_Force_Analysis);
+            Res := 0;
+         else
+            Res := Map (Ch);
+            if Res = No_Pos then
+               El := Find_Literal (El_Type, Ch);
+               if El = Null_Iir then
+                  Res := 0;
+               else
                Enum_Pos := Get_Enum_Pos (El);
                Res := Nat8 (Enum_Pos);
                Map (Ch) := Res;
+               end if;
             end if;
          end if;
          Str_Table.Set_Element_String8 (Id, I, Res);
@@ -2264,6 +2291,8 @@ package body Sem_Expr is
             Error_Msg_Sem (+Sel, "array type must be locally static");
             return;
          end if;
+         --  Use the base type so that the subtype of the choices is computed.
+         Sel_Type := Get_Base_Type (Sel_Type);
       end if;
       Sel_El_Type := Get_Element_Subtype (Sel_Type);
       Sel_El_Length := Eval_Discrete_Type_Length (Sel_El_Type);
@@ -2304,9 +2333,9 @@ package body Sem_Expr is
       --  LRM 8.8
       --
       --  If the expression is the name of an object whose subtype is locally
-      --  static, wether a scalar type or an array type, then each value of the
-      --  subtype must be represented once and only once in the set of choices
-      --  of the case statement and no other value is allowed; [...]
+      --  static, whether a scalar type or an array type, then each value of
+      --  the subtype must be represented once and only once in the set of
+      --  choices of the case statement and no other value is allowed; [...]
 
       -- 1. Allocate Arr, fill it and sort
       Count_Choices (Info, Choice_Chain);
@@ -2409,13 +2438,12 @@ package body Sem_Expr is
       Disc_Heap_Sort (Info.Nbr_Choices);
    end Sort_Discrete_Choices;
 
-   procedure Sem_Check_Continuous_Choices
-     (Choice_Chain : Iir;
-      Sub_Type : Iir;
-      Is_Sub_Range : Boolean;
-      Loc : Location_Type;
-      Low : out Iir;
-      High : out Iir)
+   procedure Sem_Check_Continuous_Choices (Choice_Chain : Iir;
+                                           Choice_Type : Iir;
+                                           Low : out Iir;
+                                           High : out Iir;
+                                           Loc : Location_Type;
+                                           Is_Sub_Range : Boolean)
    is
       --  Nodes that can appear.
       Info : Choice_Info_Type;
@@ -2423,7 +2451,7 @@ package body Sem_Expr is
       Type_Has_Bounds : Boolean;
    begin
       --  Set TYPE_HAS_BOUNDS
-      case Get_Kind (Sub_Type) is
+      case Get_Kind (Choice_Type) is
          when Iir_Kind_Enumeration_Type_Definition
            | Iir_Kind_Enumeration_Subtype_Definition
            | Iir_Kind_Integer_Subtype_Definition =>
@@ -2431,12 +2459,12 @@ package body Sem_Expr is
          when Iir_Kind_Integer_Type_Definition =>
             Type_Has_Bounds := False;
          when others =>
-            Error_Kind ("sem_check_continuous_choices(3)", Sub_Type);
+            Error_Kind ("sem_check_continuous_choices(3)", Choice_Type);
       end case;
 
       --  Check the choices are within the bounds.
       if Type_Has_Bounds
-        and then Get_Type_Staticness (Sub_Type) = Locally
+        and then Get_Type_Staticness (Choice_Type) = Locally
       then
          declare
             Choice : Iir;
@@ -2452,12 +2480,12 @@ package body Sem_Expr is
                   when Iir_Kind_Choice_By_Expression =>
                      Expr := Get_Choice_Expression (Choice);
                      if Get_Expr_Staticness (Expr) = Locally then
-                        Ok := Eval_Is_In_Bound (Expr, Sub_Type);
+                        Ok := Eval_Is_In_Bound (Expr, Choice_Type);
                      end if;
                   when Iir_Kind_Choice_By_Range =>
                      Expr := Get_Choice_Range (Choice);
                      if Get_Expr_Staticness (Expr) = Locally then
-                        Ok := Eval_Is_Range_In_Bound (Expr, Sub_Type, True);
+                        Ok := Eval_Is_Range_In_Bound (Expr, Choice_Type, True);
                      end if;
                   when Iir_Kind_Choice_By_Others =>
                      null;
@@ -2484,6 +2512,10 @@ package body Sem_Expr is
       Fill_Choices_Array (Info, Choice_Chain);
       Sort_Discrete_Choices (Info);
 
+      for I in Info.Arr'Range loop
+         Set_Choice_Order (Info.Arr (I), Int32 (I));
+      end loop;
+
       --  Set low and high bounds.
       if Info.Nbr_Choices > 0 then
          Low := Get_Assoc_Low (Info.Arr (Info.Arr'First));
@@ -2501,8 +2533,7 @@ package body Sem_Expr is
          --  of index type BT at location LOC.
          procedure Error_No_Choice (Bt : Iir;
                                     L, H : Iir_Int64;
-                                    Loc : Location_Type)
-         is
+                                    Loc : Location_Type) is
          begin
             if L = H then
                Error_Msg_Sem (+Loc, "no choice for " & Disp_Discrete (Bt, L));
@@ -2518,14 +2549,16 @@ package body Sem_Expr is
          Pos : Iir_Int64;
          Pos_Max : Iir_Int64;
          E_Pos : Iir_Int64;
+         Choice : Iir;
+         Need_Others : Boolean;
 
-         Bt : constant Iir := Get_Base_Type (Sub_Type);
+         Bt : constant Iir := Get_Base_Type (Choice_Type);
       begin
          if not Is_Sub_Range
-           and then Get_Type_Staticness (Sub_Type) = Locally
+           and then Get_Type_Staticness (Choice_Type) = Locally
            and then Type_Has_Bounds
          then
-            Get_Low_High_Limit (Get_Range_Constraint (Sub_Type), Lb, Hb);
+            Get_Low_High_Limit (Get_Range_Constraint (Choice_Type), Lb, Hb);
          else
             Lb := Low;
             Hb := High;
@@ -2543,48 +2576,77 @@ package body Sem_Expr is
             Free (Info.Arr);
             return;
          end if;
+         Need_Others := False;
          for I in Info.Arr'Range loop
-            E_Pos := Eval_Pos (Get_Assoc_Low (Info.Arr (I)));
+            Choice := Info.Arr (I);
+            E_Pos := Eval_Pos (Get_Assoc_Low (Choice));
             if E_Pos > Pos_Max then
                --  Choice out of bound, already handled.
-               Error_No_Choice
-                 (Bt, Pos, Pos_Max, Get_Location (Info.Arr (I)));
+               Error_No_Choice (Bt, Pos, Pos_Max, Get_Location (Choice));
                --  Avoid other errors.
                Pos := Pos_Max + 1;
                exit;
             end if;
-            if Pos < E_Pos and then Info.Others_Choice = Null_Iir then
-               Error_No_Choice
-                 (Bt, Pos, E_Pos - 1, Get_Location (Info.Arr (I)));
+            if Pos < E_Pos then
+               Need_Others := True;
+               if Info.Others_Choice = Null_Iir then
+                  Error_No_Choice (Bt, Pos, E_Pos - 1, Get_Location (Choice));
+               end if;
             elsif Pos > E_Pos then
+               Need_Others := True;
                if Pos = E_Pos + 1 then
                   Error_Msg_Sem
-                    (+Info.Arr (I),
+                    (+Choice,
                      "duplicate choice for " & Disp_Discrete (Bt, E_Pos));
                else
                   Error_Msg_Sem
-                    (+Info.Arr (I), "duplicate choices for "
+                    (+Choice, "duplicate choices for "
                        & Disp_Discrete (Bt, E_Pos)
                        & " to " & Disp_Discrete (Bt, Pos));
                end if;
             end if;
-            Pos := Eval_Pos (Get_Assoc_High (Info.Arr (I))) + 1;
+
+            if Get_Kind (Choice) = Iir_Kind_Choice_By_Range then
+               Pos := Eval_Pos (Get_Assoc_High (Choice)) + 1;
+            else
+               Pos := E_Pos + 1;
+            end if;
          end loop;
-         if Pos /= Pos_Max + 1 and then Info.Others_Choice = Null_Iir then
-            Error_No_Choice (Bt, Pos, Pos_Max, Loc);
+         if Pos /= Pos_Max + 1 then
+            Need_Others := True;
+            if Info.Others_Choice = Null_Iir then
+               Error_No_Choice (Bt, Pos, Pos_Max, Loc);
+            end if;
+         end if;
+
+         if not Need_Others and then Info.Others_Choice /= Null_Iir then
+            Warning_Msg_Sem (Warnid_Others, +Info.Others_Choice,
+                             "redundant 'others' choices");
          end if;
       end;
+
+      --  LRM93 7.3.2.2 Array aggregates
+      --  An others choice is locally static if the applicable index constraint
+      --  if locally static.
+      if Info.Nbr_Choices > 0
+        and then Info.Others_Choice /= Null_Iir
+        and then Get_Type_Staticness (Choice_Type) /= Locally
+      then
+         Warning_Msg_Sem
+           (Warnid_Static, +Info.Others_Choice,
+            "'others' choice allowed only if the index constraint is static");
+      end if;
 
       Free (Info.Arr);
    end Sem_Check_Continuous_Choices;
 
    procedure Sem_Choices_Range (Choice_Chain : in out Iir;
-                                Sub_Type : Iir;
-                                Is_Sub_Range : Boolean;
-                                Is_Case_Stmt : Boolean;
-                                Loc : Location_Type;
+                                Choice_Type : Iir;
                                 Low : out Iir;
-                                High : out Iir)
+                                High : out Iir;
+                                Loc : Location_Type;
+                                Is_Sub_Range : Boolean;
+                                Is_Case_Stmt : Boolean)
    is
       --  Number of positionnal choice.
       Nbr_Pos : Iir_Int64;
@@ -2613,8 +2675,9 @@ package body Sem_Expr is
          N_Choice : Iir;
          Name1 : Iir;
       begin
-         if Are_Types_Compatible (Range_Type, Sub_Type) = Not_Compatible then
-            Error_Not_Match (Name, Sub_Type);
+         if Are_Types_Compatible (Range_Type, Choice_Type) = Not_Compatible
+         then
+            Error_Not_Match (Name, Choice_Type);
             return False;
          end if;
 
@@ -2627,6 +2690,7 @@ package body Sem_Expr is
          Set_Same_Alternative_Flag (N_Choice, Get_Same_Alternative_Flag (El));
          Set_Choice_Range (N_Choice, Eval_Range_If_Static (Name1));
          Set_Choice_Staticness (N_Choice, Get_Type_Staticness (Range_Type));
+         Set_Element_Type_Flag (N_Choice, Get_Element_Type_Flag (El));
          Free_Iir (El);
 
          if Prev_El = Null_Iir then
@@ -2648,7 +2712,7 @@ package body Sem_Expr is
       begin
          if Get_Kind (El) = Iir_Kind_Choice_By_Range then
             Expr := Get_Choice_Range (El);
-            Expr := Sem_Discrete_Range_Expression (Expr, Sub_Type, True);
+            Expr := Sem_Discrete_Range_Expression (Expr, Choice_Type, True);
             if Expr = Null_Iir then
                return False;
             end if;
@@ -2683,10 +2747,11 @@ package body Sem_Expr is
                         return Replace_By_Range_Choice (Expr, Ent);
                      when others =>
                         Expr := Name_To_Expression
-                          (Expr, Get_Base_Type (Sub_Type));
+                          (Expr, Get_Base_Type (Choice_Type));
                   end case;
                when others =>
-                  Expr := Sem_Expression_Ov (Expr, Get_Base_Type (Sub_Type));
+                  Expr :=
+                    Sem_Expression_Ov (Expr, Get_Base_Type (Choice_Type));
             end case;
             if Expr = Null_Iir then
                return False;
@@ -2769,10 +2834,10 @@ package body Sem_Expr is
       --  For a positional aggregate.
       if Nbr_Pos > 0 then
          --  Check number of elements match, but only if it is possible.
-         if Get_Type_Staticness (Sub_Type) /= Locally then
+         if Get_Type_Staticness (Choice_Type) /= Locally then
             return;
          end if;
-         Pos_Max := Eval_Discrete_Type_Length (Sub_Type);
+         Pos_Max := Eval_Discrete_Type_Length (Choice_Type);
          if (not Has_Others and not Is_Sub_Range)
            and then Nbr_Pos < Pos_Max
          then
@@ -2808,7 +2873,7 @@ package body Sem_Expr is
       end if;
 
       Sem_Check_Continuous_Choices
-        (Choice_Chain, Sub_Type, Is_Sub_Range, Loc, Low, High);
+        (Choice_Chain, Choice_Type, Low, High, Loc, Is_Sub_Range);
    end Sem_Choices_Range;
 
    -- Perform semantisation on a (sub)aggregate AGGR, which is of type
@@ -2817,9 +2882,7 @@ package body Sem_Expr is
    function Sem_Record_Aggregate (Aggr: Iir_Aggregate; A_Type: Iir)
      return boolean
    is
-      Base_Type : constant Iir := Get_Base_Type (A_Type);
-      El_List : constant Iir_Flist :=
-        Get_Elements_Declaration_List (Base_Type);
+      El_List : constant Iir_Flist := Get_Elements_Declaration_List (A_Type);
 
       --  Type of the element.
       El_Type : Iir;
@@ -2877,6 +2940,7 @@ package body Sem_Expr is
          Set_Named_Entity (Expr, Aggr_El);
          Xref_Ref (Expr, Aggr_El);
 
+         --  Was a choice_by_expression, now by_name.
          N_El := Create_Iir (Iir_Kind_Choice_By_Name);
          Location_Copy (N_El, Ass);
          Set_Choice_Name (N_El, Expr);
@@ -2896,6 +2960,10 @@ package body Sem_Expr is
       Has_Named : Boolean;
       Rec_El_Index : Natural;
       Expr_Staticness : Iir_Staticness;
+
+      --  True if at least one element constrains the subtype.  For unbounded
+      --  records.
+      Add_Constraints : Boolean;
    begin
       --  Not yet handled.
       Set_Aggregate_Expand_Flag (Aggr, False);
@@ -2904,6 +2972,7 @@ package body Sem_Expr is
       Assoc_Chain := Get_Association_Choices_Chain (Aggr);
       Matches := (others => Null_Iir);
       Expr_Staticness := Locally;
+      Add_Constraints := False;
 
       El_Type := Null_Iir;
       Has_Named := False;
@@ -2915,7 +2984,8 @@ package body Sem_Expr is
 
          --  If there is an associated expression with the choice, then the
          --  choice is a new alternative, and has no expected type.
-         if Expr /= Null_Iir then
+         if not Get_Same_Alternative_Flag (El) then
+            pragma Assert (Expr /= Null_Iir);
             El_Type := Null_Iir;
          end if;
 
@@ -2967,21 +3037,27 @@ package body Sem_Expr is
          end case;
 
          --  Analyze the expression associated.
-         if Expr /= Null_Iir then
+         if not Get_Same_Alternative_Flag (El) then
             if El_Type /= Null_Iir then
+               --  Analyze the expression only if the choice is correct.
                Expr := Sem_Expression (Expr, El_Type);
                if Expr /= Null_Iir then
                   Set_Associated_Expr (El, Eval_Expr_If_Static (Expr));
                   Expr_Staticness := Min (Expr_Staticness,
                                           Get_Expr_Staticness (Expr));
+                  if not Add_Constraints
+                    and then Is_Fully_Constrained_Type (Get_Type (Expr))
+                    and then not Is_Fully_Constrained_Type (El_Type)
+                  then
+                     Add_Constraints := True;
+                  end if;
                else
                   Ok := False;
                end if;
             else
                --  This case is not possible unless there is an error.
-               if Ok then
-                  raise Internal_Error;
-               end if;
+               pragma Assert (not Ok);
+               null;
             end if;
          end if;
 
@@ -2999,6 +3075,55 @@ package body Sem_Expr is
       end loop;
       Set_Expr_Staticness (Aggr, Min (Get_Expr_Staticness (Aggr),
                                       Expr_Staticness));
+
+      if Ok and Add_Constraints then
+         declare
+            Rec_Type : Iir;
+            Rec_El_List : Iir_Flist;
+            Rec_El : Iir;
+            Rec_El_Type : Iir;
+            New_Rec_El : Iir;
+            Constraint : Iir_Constraint;
+            Composite_Found : Boolean;
+            Staticness : Iir_Staticness;
+         begin
+            Rec_Type := Sem_Types.Copy_Subtype_Indication (Get_Type (Aggr));
+            Rec_El_List := Get_Elements_Declaration_List (Rec_Type);
+            Constraint := Fully_Constrained;
+            Composite_Found := False;
+            Staticness := Locally;
+            for I in Flist_First .. Flist_Last (El_List) loop
+               El := Matches (I);
+               El_Type := Get_Type (Get_Associated_Expr (El));
+               Rec_El := Get_Nth_Element (Rec_El_List, I);
+               Rec_El_Type := Get_Type (Rec_El);
+               if Is_Fully_Constrained_Type (El_Type)
+                 and then not Is_Fully_Constrained_Type (Rec_El_Type)
+               then
+                  Rec_El_Type := El_Type;
+                  New_Rec_El :=
+                    Create_Iir (Iir_Kind_Record_Element_Constraint);
+                  Location_Copy (New_Rec_El, Rec_El);
+                  Set_Parent (New_Rec_El, Rec_Type);
+                  Set_Identifier (New_Rec_El, Get_Identifier (Rec_El));
+                  pragma Assert (I = Natural (Get_Element_Position (Rec_El)));
+                  Set_Element_Position (New_Rec_El, Iir_Index32 (I));
+                  Set_Nth_Element (Rec_El_List, I, New_Rec_El);
+                  Set_Type (New_Rec_El, Rec_El_Type);
+                  Append_Owned_Element_Constraint (Rec_Type, New_Rec_El);
+               end if;
+               Staticness := Min (Staticness,
+                                  Get_Type_Staticness (Rec_El_Type));
+               Sem_Types.Update_Record_Constraint
+                 (Constraint, Composite_Found, Rec_El_Type);
+            end loop;
+            Set_Type_Staticness (Rec_Type, Staticness);
+            Set_Constraint_State (Rec_Type, Constraint);
+            Set_Type (Aggr, Rec_Type);
+            Set_Literal_Subtype (Aggr, Rec_Type);
+         end;
+      end if;
+
       return Ok;
    end Sem_Record_Aggregate;
 
@@ -3010,7 +3135,6 @@ package body Sem_Expr is
 
       --  True if one sub-aggregate is by named/by position.
       Has_Named : Boolean := False;
-      Has_Positional : Boolean := False;
 
       --  True if one sub-aggregate is dynamic.
       Has_Dynamic : Boolean := False;
@@ -3040,15 +3164,174 @@ package body Sem_Expr is
 
    type Array_Aggr_Info_Arr is array (Natural range <>) of Array_Aggr_Info;
 
+   procedure Sem_Array_Aggregate_Elements
+     (Aggr : Iir;
+      A_Type : Iir;
+      Expr_Staticness : in out Iir_Staticness;
+      Info : in out Array_Aggr_Info)
+   is
+      Element_Type : constant Iir := Get_Element_Subtype (A_Type);
+      El : Iir;
+      El_Expr : Iir;
+      Expr : Iir;
+      El_Staticness : Iir_Staticness;
+      Assoc_Chain : Iir;
+      Res_Type : Iir;
+
+      --  True if the type of the expression is the type of the aggregate.
+      Is_Array : Boolean;
+
+      --  Null_Iir if the type of aggregagte elements myst be of the element
+      --  type.
+      Elements_Types : Iir;
+      Elements_Types_List : Iir_List;
+   begin
+      --  LRM93 7.3.2.2 Array aggregates
+      --  [...] the expression of each element association must be of the
+      --  element type.
+
+      --  LRM08 9.3.3.3 Array aggregates
+      --  For an aggregate of a one-dimensional array type, [each choice shall
+      --  specify values of the index type], and the expression of each element
+      --  association shall be of either the element type or the type of the
+      --  aggregate.
+      if Flags.Vhdl_Std >= Vhdl_08
+        and then Is_One_Dimensional_Array_Type (A_Type)
+      then
+         Elements_Types_List := Create_Iir_List;
+         Append_Element (Elements_Types_List, Element_Type);
+         Append_Element (Elements_Types_List, Get_Base_Type (A_Type));
+         Elements_Types := Create_Overload_List (Elements_Types_List);
+      else
+         Elements_Types := Null_Iir;
+      end if;
+
+      Assoc_Chain := Get_Association_Choices_Chain (Aggr);
+
+      El := Assoc_Chain;
+      while El /= Null_Iir loop
+         if not Get_Same_Alternative_Flag (El) then
+            El_Expr := Get_Associated_Expr (El);
+            Is_Array := False;
+
+            --  Directly analyze the expression with the type of the element
+            --  if it cannot be the type of the aggregate.
+            --  In VHDL-2008, also do it when the expression is an aggregate.
+            --  This is not in the LRM, but otherwise this would create a lot
+            --  of ambiguities when the element type is a composite type.  Eg:
+            --
+            --    type time_unit is record
+            --      val : time;
+            --      name : string (1 to 3);
+            --    end record;
+            --    type time_names_type is array (1 to 2) of time_unit;
+            --    constant time_names : time_names_type :=
+            --      ((fs, "fs "), (ps, "ps "));
+            --
+            --  The type of the first sub-aggregate could be either time_unit
+            --  or time_names_type.  Because it's determined by the context,
+            --  it is ambiguous.  But there is no point in using aggregates
+            --  to specify a range of choices.
+            --  FIXME: fix LRM ?
+            if Elements_Types = Null_Iir
+              or else Get_Kind (El_Expr) = Iir_Kind_Aggregate
+            then
+               Expr := Sem_Expression (El_Expr, Element_Type);
+            else
+               Expr := Sem_Expression_Wildcard (El_Expr, Null_Iir);
+               if Expr /= Null_Iir then
+                  Res_Type := Compatible_Types_Intersect
+                    (Get_Type (Expr), Elements_Types);
+                  if Res_Type = Null_Iir then
+                     Error_Msg_Sem
+                       (+Get_Associated_Expr (El),
+                        "type of element not compatible with the "
+                          & "expected type");
+                     Set_Type (El_Expr, Error_Type);
+                     Expr := Null_Iir;
+                  elsif Is_Overload_List (Res_Type) then
+                     Error_Msg_Sem
+                       (+Expr, "type of element is ambiguous");
+                     Free_Overload_List (Res_Type);
+                     Set_Type (El_Expr, Error_Type);
+                     Expr := Null_Iir;
+                  else
+                     pragma Assert (Is_Defined_Type (Res_Type));
+                     Is_Array :=
+                       Get_Base_Type (Res_Type) = Get_Base_Type (A_Type);
+                     Expr := Sem_Expression_Wildcard (Expr, Res_Type);
+                  end if;
+               end if;
+            end if;
+
+            if Expr /= Null_Iir then
+               El_Staticness := Get_Expr_Staticness (Expr);
+               Expr := Eval_Expr_If_Static (Expr);
+               Set_Associated_Expr (El, Expr);
+
+               if not Is_Static_Construct (Expr) then
+                  Set_Aggregate_Expand_Flag (Aggr, False);
+               end if;
+
+               if not Is_Array
+                 and then not Eval_Is_In_Bound (Expr, Element_Type)
+               then
+                  Info.Has_Bound_Error := True;
+                  Warning_Msg_Sem (Warnid_Runtime_Error, +Expr,
+                                   "element is out of the bounds");
+               end if;
+
+               Expr_Staticness := Min (Expr_Staticness, El_Staticness);
+
+               Info.Nbr_Assocs := Info.Nbr_Assocs + 1;
+            else
+               Info.Error := True;
+            end if;
+         end if;
+
+         Set_Element_Type_Flag (El, not Is_Array);
+
+         if Is_Array then
+            --  LRM08 9.3.3.3 Array aggregates
+            --  If the type of the expression of an element association
+            --  is the type of the aggregate, then either the element
+            --  association shall be positional or the choice shall be
+            --  a discrete range.
+
+            --  GHDL: must be checked for all associations, so do it outside
+            --  the above 'if' statement.
+            --  GHDL: improve error message.
+            case Get_Kind (El) is
+               when Iir_Kind_Choice_By_None
+                 | Iir_Kind_Choice_By_Range =>
+                  null;
+               when Iir_Kind_Choice_By_Others =>
+                  Error_Msg_Sem
+                    (+El, "expression for 'others' must be an element");
+               when others =>
+                  Error_Msg_Sem
+                    (+El, "positional association or "
+                       & "discrete range choice required");
+            end case;
+         end if;
+
+         El := Get_Chain (El);
+      end loop;
+
+      if Elements_Types /= Null_Iir then
+         Free_Overload_List (Elements_Types);
+      end if;
+   end Sem_Array_Aggregate_Elements;
+
    --  Analyze an array aggregate AGGR of *base type* A_TYPE.
    --  The type of the array is computed into A_SUBTYPE.
    --  DIM is the dimension index in A_TYPE.
    --  Return FALSE in case of error.
-   procedure Sem_Array_Aggregate_Type_1 (Aggr: Iir;
-                                         A_Type: Iir;
-                                         Infos : in out Array_Aggr_Info_Arr;
-                                         Constrained : Boolean;
-                                         Dim: Natural)
+   procedure Sem_Array_Aggregate_1 (Aggr: Iir;
+                                    A_Type: Iir;
+                                    Infos : in out Array_Aggr_Info_Arr;
+                                    Constrained : Boolean;
+                                    Dim: Natural)
    is
       Index_List : constant Iir_Flist := Get_Index_Subtype_List (A_Type);
 
@@ -3068,16 +3351,85 @@ package body Sem_Expr is
       Index_Constraint : Iir_Range_Expression; -- FIXME: 'range.
       Dir : Iir_Direction;
       Choice_Staticness : Iir_Staticness;
+      Len_Staticness : Iir_Staticness;
       Expr_Staticness : Iir_Staticness;
 
       Info : Array_Aggr_Info renames Infos (Dim);
    begin
+      --  Analyze aggregate elements.
+      if Constrained then
+         Expr_Staticness := Get_Type_Staticness (Index_Type);
+         if Expr_Staticness /= Locally then
+            --  Cannot be statically built as the bounds are not known and
+            --  must be checked at run-time.
+            Set_Aggregate_Expand_Flag (Aggr, False);
+         end if;
+      else
+         Expr_Staticness := Locally;
+      end if;
+
+      if Dim = Get_Nbr_Elements (Index_List) then
+         --  A type has been found for AGGR, analyze AGGR as if it was
+         --  an aggregate with a subtype (and not a string).
+         if Get_Kind (Aggr) = Iir_Kind_Aggregate then
+            Sem_Array_Aggregate_Elements (Aggr, A_Type, Expr_Staticness, Info);
+         else
+            --  Nothing to do for a string.
+            null;
+         end if;
+      else
+         --  A sub-aggregate: recurse.
+         declare
+            Sub_Aggr : Iir;
+         begin
+            --  Here we know that AGGR is an aggregate because:
+            --  * either this is the first call (ie DIM = 1) and therefore
+            --    AGGR is an aggregate (an aggregate is being analyzed).
+            --  * or DIM > 1 and the use of strings is checked (just bellow).
+            Assoc_Chain := Get_Association_Choices_Chain (Aggr);
+            Choice := Assoc_Chain;
+            while Choice /= Null_Iir loop
+               if not Get_Same_Alternative_Flag (Choice) then
+                  Sub_Aggr := Get_Associated_Expr (Choice);
+                  case Get_Kind (Sub_Aggr) is
+                     when Iir_Kind_Aggregate =>
+                        Sem_Array_Aggregate_1
+                          (Sub_Aggr, A_Type, Infos, Constrained, Dim + 1);
+                        if not Get_Aggregate_Expand_Flag (Sub_Aggr) then
+                           Set_Aggregate_Expand_Flag (Aggr, False);
+                        end if;
+                     when Iir_Kind_String_Literal8 =>
+                        if Dim + 1 = Get_Nbr_Elements (Index_List) then
+                           Sem_Array_Aggregate_1
+                             (Sub_Aggr, A_Type, Infos, Constrained, Dim + 1);
+                        else
+                           Error_Msg_Sem
+                             (+Sub_Aggr, "string literal not allowed here");
+                           Infos (Dim + 1).Error := True;
+                        end if;
+                     when others =>
+                        Error_Msg_Sem (+Sub_Aggr, "sub-aggregate expected");
+                        Infos (Dim + 1).Error := True;
+                  end case;
+               end if;
+
+               --  Always true for a sub-aggregate.
+               Set_Element_Type_Flag (Choice, True);
+
+               Choice := Get_Chain (Choice);
+            end loop;
+         end;
+      end if;
+      Set_Expr_Staticness
+        (Aggr, Min (Expr_Staticness, Get_Expr_Staticness (Aggr)));
+
       --  Analyze choices.
+      Len_Staticness := Locally;
       case Get_Kind (Aggr) is
          when Iir_Kind_Aggregate =>
             Assoc_Chain := Get_Association_Choices_Chain (Aggr);
-            Sem_Choices_Range (Assoc_Chain, Index_Type, not Constrained, False,
-                               Get_Location (Aggr), Low, High);
+            Sem_Choices_Range (Assoc_Chain, Index_Type, Low, High,
+                               Get_Location (Aggr), not Constrained, False);
             Set_Association_Choices_Chain (Aggr, Assoc_Chain);
 
             --  Update infos.
@@ -3114,7 +3466,35 @@ package body Sem_Expr is
                      Len := Len + 1;
                   when Iir_Kind_Choice_By_None =>
                      Has_Positional_Choice := True;
-                     Len := Len + 1;
+                     if Get_Element_Type_Flag (Choice) then
+                        Len := Len + 1;
+                     else
+                        --  Extract length from associated expression.
+                        declare
+                           --  Always has an associated expr, as not named.
+                           Expr : constant Iir := Get_Associated_Expr (Choice);
+                           Expr_Type : constant Iir := Get_Type (Expr);
+                           Expr_Index : Iir;
+                           Index_Staticness : Iir_Staticness;
+                        begin
+                           if not Is_Error (Expr_Type) then
+                              Expr_Index := Get_Index_Type (Expr_Type, 0);
+                              Index_Staticness :=
+                                Get_Type_Staticness (Expr_Index);
+                              case Index_Staticness is
+                                 when Locally =>
+                                    Len := Len + Natural
+                                      (Eval_Discrete_Type_Length (Expr_Index));
+                                 when Globally | None =>
+                                    Len_Staticness := Iirs.Min
+                                      (Len_Staticness, Index_Staticness);
+                                 when Unknown =>
+                                    --  Must have been caught by Is_Error.
+                                    raise Internal_Error;
+                              end case;
+                           end if;
+                        end;
+                     end if;
                   when Iir_Kind_Choice_By_Others =>
                      if not Constrained then
                         Error_Msg_Sem (+Aggr, "'others' choice not allowed "
@@ -3124,7 +3504,7 @@ package body Sem_Expr is
                      end if;
                      Has_Others := True;
                   when others =>
-                     Error_Kind ("sem_array_aggregate_type", Choice);
+                     Error_Kind ("sem_array_aggregate", Choice);
                end case;
                --  LRM93 7.3.2.2
                --  Apart from the final element with the single choice
@@ -3162,12 +3542,9 @@ package body Sem_Expr is
             Info.Nbr_Assocs := Info.Nbr_Assocs + Len;
 
          when others =>
-            Error_Kind ("sem_array_aggregate_type_1", Aggr);
+            Error_Kind ("sem_array_aggregate(1)", Aggr);
       end case;
 
-      if Is_Positional = True then
-         Info.Has_Positional := True;
-      end if;
       if Is_Positional = False then
          Info.Has_Named := True;
       end if;
@@ -3207,7 +3584,9 @@ package body Sem_Expr is
             --  by S'LEFT where S is the index subtype of the base type of the
             --  array; [...] the rightmost bound is determined by the direction
             --  of the index subtype and the number of element.
-            if Get_Type_Staticness (Index_Type) = Locally then
+            if Get_Type_Staticness (Index_Type) = Locally
+              and then Len_Staticness = Locally
+            then
                Info.Index_Subtype := Create_Range_Subtype_By_Length
                  (Index_Type, Iir_Int64 (Len), Get_Location (Aggr));
             end if;
@@ -3215,13 +3594,14 @@ package body Sem_Expr is
             --  Create an index subtype.
             case Get_Kind (Index_Type) is
                when Iir_Kind_Integer_Subtype_Definition =>
-                  Info.Index_Subtype := Create_Iir (Get_Kind (Index_Type));
+                  Info.Index_Subtype :=
+                    Create_Iir (Iir_Kind_Integer_Subtype_Definition);
                when Iir_Kind_Enumeration_Type_Definition
                  | Iir_Kind_Enumeration_Subtype_Definition =>
                   Info.Index_Subtype :=
                     Create_Iir (Iir_Kind_Enumeration_Subtype_Definition);
                when others =>
-                  Error_Kind ("sem_array_aggregate_type2", Index_Type);
+                  Error_Kind ("sem_array_aggregate(2)", Index_Type);
             end case;
             Location_Copy (Info.Index_Subtype, Aggr);
             Set_Base_Type (Info.Index_Subtype, Get_Base_Type (Index_Type));
@@ -3333,105 +3713,9 @@ package body Sem_Expr is
          end if;
       end if;
 
-      --  Analyze aggregate elements.
-      if Constrained then
-         Expr_Staticness := Get_Type_Staticness (Index_Type);
-         if Expr_Staticness /= Locally then
-            --  Cannot be statically built as the bounds are not known and
-            --  must be checked at run-time.
-            Set_Aggregate_Expand_Flag (Aggr, False);
-         end if;
-      else
-         Expr_Staticness := Locally;
-      end if;
-
-      if Dim = Get_Nbr_Elements (Index_List) then
-         --  A type has been found for AGGR, analyze AGGR as if it was
-         --  an aggregate with a subtype (and not a string).
-
-         if Get_Kind (Aggr) /= Iir_Kind_Aggregate then
-            --  Nothing to do for a string.
-            return;
-         end if;
-
-         -- LRM93 7.3.2.2:
-         --   the expression of each element association must be of the
-         --   element type.
-         declare
-            Element_Type : constant Iir := Get_Element_Subtype (A_Type);
-            El : Iir;
-            Expr : Iir;
-            El_Staticness : Iir_Staticness;
-         begin
-            El := Assoc_Chain;
-            while El /= Null_Iir loop
-               if not Get_Same_Alternative_Flag (El) then
-                  Expr := Get_Associated_Expr (El);
-                  Expr := Sem_Expression (Expr, Element_Type);
-                  if Expr /= Null_Iir then
-                     El_Staticness := Get_Expr_Staticness (Expr);
-                     Expr := Eval_Expr_If_Static (Expr);
-                     Set_Associated_Expr (El, Expr);
-
-                     if not Is_Static_Construct (Expr) then
-                        Set_Aggregate_Expand_Flag (Aggr, False);
-                     end if;
-
-                     if not Eval_Is_In_Bound (Expr, Element_Type)
-                     then
-                        Info.Has_Bound_Error := True;
-                        Warning_Msg_Sem (Warnid_Runtime_Error, +Expr,
-                                         "element is out of the bounds");
-                     end if;
-
-                     Expr_Staticness := Min (Expr_Staticness, El_Staticness);
-
-                     Info.Nbr_Assocs := Info.Nbr_Assocs + 1;
-                  else
-                     Info.Error := True;
-                  end if;
-               end if;
-               El := Get_Chain (El);
-            end loop;
-         end;
-      else
-         --  A sub-aggregate: recurse.
-         declare
-            Sub_Aggr : Iir;
-         begin
-            Choice := Assoc_Chain;
-            while Choice /= Null_Iir loop
-               if not Get_Same_Alternative_Flag (Choice) then
-                  Sub_Aggr := Get_Associated_Expr (Choice);
-                  case Get_Kind (Sub_Aggr) is
-                     when Iir_Kind_Aggregate =>
-                        Sem_Array_Aggregate_Type_1
-                          (Sub_Aggr, A_Type, Infos, Constrained, Dim + 1);
-                        if not Get_Aggregate_Expand_Flag (Sub_Aggr) then
-                           Set_Aggregate_Expand_Flag (Aggr, False);
-                        end if;
-                     when Iir_Kind_String_Literal8 =>
-                        if Dim + 1 = Get_Nbr_Elements (Index_List) then
-                           Sem_Array_Aggregate_Type_1
-                             (Sub_Aggr, A_Type, Infos, Constrained, Dim + 1);
-                        else
-                           Error_Msg_Sem
-                             (+Sub_Aggr, "string literal not allowed here");
-                           Infos (Dim + 1).Error := True;
-                        end if;
-                     when others =>
-                        Error_Msg_Sem (+Sub_Aggr, "sub-aggregate expected");
-                        Infos (Dim + 1).Error := True;
-                  end case;
-               end if;
-               Choice := Get_Chain (Choice);
-            end loop;
-         end;
-      end if;
-      Expr_Staticness := Min (Get_Expr_Staticness (Aggr),
-                              Min (Expr_Staticness, Choice_Staticness));
+      Expr_Staticness := Min (Get_Expr_Staticness (Aggr), Choice_Staticness);
       Set_Expr_Staticness (Aggr, Expr_Staticness);
-   end Sem_Array_Aggregate_Type_1;
+   end Sem_Array_Aggregate_1;
 
    --  Analyze an array aggregate whose type is AGGR_TYPE.
    --  If CONSTRAINED is true, then the aggregate appears in one of the
@@ -3439,7 +3723,7 @@ package body Sem_Expr is
    --  If CONSTRAINED is false, the aggregate can not have an 'others' choice.
    --  Create a subtype for this aggregate.
    --  Return NULL_IIR in case of error, or AGGR if not.
-   function Sem_Array_Aggregate_Type
+   function Sem_Array_Aggregate
      (Aggr : Iir; Aggr_Type : Iir; Constrained : Boolean) return Iir
    is
       A_Subtype: Iir;
@@ -3455,7 +3739,7 @@ package body Sem_Expr is
       Set_Aggregate_Expand_Flag (Aggr, True);
 
       --  Analyze the aggregate.
-      Sem_Array_Aggregate_Type_1 (Aggr, Aggr_Type, Infos, Constrained, 1);
+      Sem_Array_Aggregate_1 (Aggr, Aggr_Type, Infos, Constrained, 1);
 
       Aggr_Constrained := True;
       for I in Infos'Range loop
@@ -3470,22 +3754,37 @@ package body Sem_Expr is
       end loop;
       Base_Type := Get_Base_Type (Aggr_Type);
 
-      --  FIXME: should reuse AGGR_TYPE iff AGGR_TYPE is fully constrained
+      --  Reuse AGGR_TYPE iff AGGR_TYPE is fully constrained
       --  and statically match the subtype of the aggregate.
       if Aggr_Constrained then
-         A_Subtype := Create_Array_Subtype (Base_Type, Get_Location (Aggr));
-         Type_Staticness := Get_Type_Staticness (A_Subtype);
+         Type_Staticness := Locally;
          for I in Infos'Range loop
-            Set_Nth_Element (Get_Index_Subtype_List (A_Subtype), I - 1,
-                             Infos (I).Index_Subtype);
             Type_Staticness := Min
               (Type_Staticness, Get_Type_Staticness (Infos (I).Index_Subtype));
          end loop;
-         Set_Type_Staticness (A_Subtype, Type_Staticness);
-         Set_Index_Constraint_Flag (A_Subtype, True);
-         Set_Constraint_State (A_Subtype, Fully_Constrained);
-         Set_Type (Aggr, A_Subtype);
-         Set_Literal_Subtype (Aggr, A_Subtype);
+
+         if Get_Constraint_State (Aggr_Type) = Fully_Constrained
+           and then Get_Type_Staticness (Aggr_Type) = Locally
+           and then Type_Staticness = Locally
+         then
+            Set_Type (Aggr, Aggr_Type);
+         else
+            A_Subtype := Create_Array_Subtype (Base_Type, Get_Location (Aggr));
+            --  FIXME: extract element subtype ?
+            Set_Element_Subtype (A_Subtype, Get_Element_Subtype (Aggr_Type));
+            Type_Staticness := Min (Type_Staticness,
+                                    Get_Type_Staticness (A_Subtype));
+            for I in Infos'Range loop
+               Set_Nth_Element (Get_Index_Subtype_List (A_Subtype), I - 1,
+                                Infos (I).Index_Subtype);
+            end loop;
+            Set_Type_Staticness (A_Subtype, Type_Staticness);
+            Set_Index_Constraint_Flag (A_Subtype, True);
+            --  FIXME: the element can be unconstrained.
+            Set_Constraint_State (A_Subtype, Fully_Constrained);
+            Set_Type (Aggr, A_Subtype);
+            Set_Literal_Subtype (Aggr, A_Subtype);
+         end if;
          if Type_Staticness = Locally and then Get_Aggregate_Expand_Flag (Aggr)
          then
             --  Compute ratio of elements vs size of the aggregate to determine
@@ -3548,12 +3847,28 @@ package body Sem_Expr is
          Set_Aggr_Others_Flag (Info, Infos (I).Has_Others);
       end loop;
       return Aggr;
-   end Sem_Array_Aggregate_Type;
+   end Sem_Array_Aggregate;
 
    --  Analyze aggregate EXPR whose type is expected to be A_TYPE.
    --  A_TYPE cannot be null_iir (this case is handled in sem_expression_ov)
-   function Sem_Aggregate (Expr: Iir_Aggregate; A_Type: Iir)
-                          return Iir_Aggregate is
+   --  If FORCE_CONSTRAINED is true, the aggregate type is constrained by the
+   --  context, even if its type isn't.  This is to deal with cases like:
+   --    procedure set (v : out string) is
+   --    begin
+   --      v := (others => ' ');
+   --    end set;
+   --  but this is not allowed by:
+   --  LRM08 9.3.3.3 Array aggregates
+   --  e) As a value expression in an assignment statement, where the target
+   --     is a declared object (or member thereof), and either the subtype of
+   --     the target is a fully constrained array subtype or the target is a
+   --     slice name.
+   function Sem_Aggregate
+     (Expr: Iir_Aggregate; A_Type: Iir; Force_Constrained : Boolean)
+     return Iir_Aggregate
+   is
+      Force_Constrained2 : constant Boolean :=
+        Force_Constrained and Flag_Relaxed_Rules;
    begin
       pragma Assert (A_Type /= Null_Iir);
 
@@ -3569,26 +3884,39 @@ package body Sem_Expr is
       Set_Type (Expr, A_Type); -- FIXME: should free old type
       case Get_Kind (A_Type) is
          when Iir_Kind_Array_Subtype_Definition =>
-            return Sem_Array_Aggregate_Type
-              (Expr, A_Type, Get_Index_Constraint_Flag (A_Type));
+            return Sem_Array_Aggregate
+              (Expr, A_Type,
+               Force_Constrained2 or else Get_Index_Constraint_Flag (A_Type));
          when Iir_Kind_Array_Type_Definition =>
-            return Sem_Array_Aggregate_Type (Expr, A_Type, False);
+            return Sem_Array_Aggregate (Expr, A_Type, Force_Constrained2);
          when Iir_Kind_Record_Type_Definition
            | Iir_Kind_Record_Subtype_Definition =>
             if not Sem_Record_Aggregate (Expr, A_Type) then
                return Null_Iir;
             end if;
             return Expr;
+         when Iir_Kind_Error =>
+            return Null_Iir;
          when others =>
             Error_Msg_Sem (+Expr, "type %n is not composite", +A_Type);
             return Null_Iir;
       end case;
    end Sem_Aggregate;
 
-   -- Transform LIT into a physical_literal.
-   -- LIT can be either a not analyzed physical literal or
-   --  a simple name that is a physical unit.  In the later case, a physical
-   --  literal is created.
+   function Is_Physical_Literal_Zero (Lit : Iir) return Boolean is
+   begin
+      case Iir_Kinds_Physical_Literal (Get_Kind (Lit)) is
+         when Iir_Kind_Physical_Int_Literal =>
+            return Get_Value (Lit) = 0;
+         when Iir_Kind_Physical_Fp_Literal =>
+            return Get_Fp_Value (Lit) = 0.0;
+      end case;
+   end Is_Physical_Literal_Zero;
+
+   --  Transform LIT into a physical_literal.
+   --  LIT can be either a not analyzed physical literal or
+   --   a simple name that is a physical unit.  In the later case, a physical
+   --   literal is created.
    function Sem_Physical_Literal (Lit: Iir) return Iir
    is
       Unit_Name : Iir;
@@ -3610,6 +3938,10 @@ package body Sem_Expr is
          when others =>
             Error_Kind ("sem_physical_literal", Lit);
       end case;
+      if Is_Error (Unit_Name) then
+         return Create_Error_Expr (Res, Error_Mark);
+      end if;
+
       Unit_Name := Sem_Denoting_Name (Unit_Name);
       Unit := Get_Named_Entity (Unit_Name);
       if Get_Kind (Unit) /= Iir_Kind_Unit_Declaration then
@@ -3617,17 +3949,36 @@ package body Sem_Expr is
             Error_Class_Match (Unit_Name, "unit");
          end if;
          Set_Named_Entity (Unit_Name, Create_Error_Name (Unit_Name));
+      else
+         --  Physical unit is used.
+         Set_Use_Flag (Unit, True);
+
+         if Get_Type (Unit) = Time_Type_Definition
+           and then Get_Value (Get_Physical_Literal (Unit)) = 0
+           and then not Is_Physical_Literal_Zero (Res)
+         then
+            --  LRM08 5.2.4.2 Predefined physical types
+            --  It is an error if a given unit of type TIME appears anywhere
+            --  within the design hierarchy defining a model to be elaborated,
+            --  and if the position number of that unit is less than that of
+            --  the secondary unit selected as the resolution limit for type
+            --  TIME during the elaboration of the model, unless that unit is
+            --  part of a physical literal whose abstract literal is either
+            --  the integer value zero or the floating-point value zero.
+            Error_Msg_Sem
+              (+Res, "physical unit %i is below the time resolution", +Unit);
+         end if;
       end if;
       Set_Unit_Name (Res, Unit_Name);
       Set_Physical_Unit (Res, Get_Named_Entity (Unit_Name));
       Unit_Type := Get_Type (Unit_Name);
       Set_Type (Res, Unit_Type);
 
-      -- LRM93 7.4.2
-      -- 1. a literal of type TIME.
+      --  LRM93 7.4.2
+      --  1. a literal of type TIME.
       --
-      -- LRM93 7.4.1
-      -- 1. a literal of any type other than type TIME;
+      --  LRM93 7.4.1
+      --  1. a literal of any type other than type TIME;
       Set_Expr_Staticness (Res, Get_Expr_Staticness (Unit_Name));
       --Eval_Check_Constraints (Res);
       return Res;
@@ -3684,6 +4035,7 @@ package body Sem_Expr is
                --  A subtype indication that is part of an allocator must
                --  not include a resolution function.
                if Is_Anonymous_Type_Definition (Arg)
+                 and then Get_Kind (Arg) /= Iir_Kind_Access_Subtype_Definition
                  and then Get_Resolution_Indication (Arg) /= Null_Iir
                then
                   Error_Msg_Sem (+Expr, "subtype indication must not include"
@@ -3752,6 +4104,19 @@ package body Sem_Expr is
       --  static expression with a non-locally static subtype.
       Set_Expr_Staticness (Expr, Min (Get_Expr_Staticness (Res),
                                       Get_Type_Staticness (N_Type)));
+
+      --  When possible, use the type of the expression as the type of the
+      --  qualified expression.
+      --  TODO: also handle unbounded subtypes, but only if this is a proper
+      --   subtype.
+      case Get_Kind (N_Type) is
+         when Iir_Kind_Array_Type_Definition
+           | Iir_Kind_Record_Type_Definition =>
+            Set_Type (Expr, Get_Type (Res));
+         when others =>
+            null;
+      end case;
+
       return Expr;
    end Sem_Qualified_Expression;
 
@@ -4149,7 +4514,7 @@ package body Sem_Expr is
             if A_Type = Null_Iir then
                return Expr;
             else
-               return Sem_Aggregate (Expr, A_Type);
+               return Sem_Aggregate (Expr, A_Type, False);
             end if;
 
          when Iir_Kind_Parenthesis_Expression =>
@@ -4177,6 +4542,17 @@ package body Sem_Expr is
          when Iir_Kind_Procedure_Declaration =>
             Error_Msg_Sem (+Expr, "%n cannot be used as an expression", +Expr);
             return Null_Iir;
+
+         when Iir_Kind_Range_Expression =>
+            --  Can only happen in case of parse error, as a range is not an
+            --  expression.
+            pragma Assert (Flags.Flag_Force_Analysis);
+            declare
+               Res : Iir;
+            begin
+               Res := Sem_Simple_Range_Expression (Expr, A_Type, True);
+               return Create_Error_Expr (Res, A_Type);
+            end;
 
          when Iir_Kind_Error =>
             -- Always ok.
@@ -4329,7 +4705,9 @@ package body Sem_Expr is
       end if;
    end Compatible_Types_Intersect;
 
-   function Sem_Expression_Wildcard (Expr : Iir; Atype : Iir) return Iir
+   function Sem_Expression_Wildcard
+     (Expr : Iir; Atype : Iir; Force_Constrained : Boolean := False)
+     return Iir
    is
       Expr_Type : constant Iir := Get_Type (Expr);
       Atype_Defined : constant Boolean := Is_Defined_Type (Atype);
@@ -4350,7 +4728,7 @@ package body Sem_Expr is
       case Get_Kind (Expr) is
          when Iir_Kind_Aggregate =>
             if Atype_Defined then
-               return Sem_Aggregate (Expr, Atype);
+               return Sem_Aggregate (Expr, Atype, Force_Constrained);
             else
                pragma Assert (Expr_Type = Null_Iir);
                Set_Type (Expr, Wildcard_Any_Aggregate_Type);
@@ -4481,10 +4859,16 @@ package body Sem_Expr is
       Result_Type : Iir;
       Expr_Type : Iir;
    begin
-      if Expr = Null_Iir then
+      if Is_Error (Expr) then
          return;
       end if;
-      Expr_Type := Get_Type (Expr);
+
+      --  Use the base type; EXPR may define its own subtype (like in
+      --  qualified expression with forwarding) which must not be referenced
+      --  above it.  In any case, that also makes sense: we need to deal with
+      --  types, not with subtypes.
+      Expr_Type := Get_Base_Type (Get_Type (Expr));
+
       pragma Assert (Expr_Type /= Null_Iir);
       Result_Type := Compatible_Types_Intersect (Atype, Expr_Type);
       if Atype /= Null_Iir and then Is_Overload_List (Atype) then
@@ -4540,7 +4924,7 @@ package body Sem_Expr is
 
       case Get_Kind (Expr) is
          when Iir_Kind_Aggregate =>
-            Res := Sem_Aggregate (Expr, A_Type);
+            Res := Sem_Aggregate (Expr, A_Type, False);
          when Iir_Kind_String_Literal8 =>
             if A_Type = Null_Iir then
                Res := Sem_Expression_Ov (Expr, Null_Iir);
@@ -4612,34 +4996,33 @@ package body Sem_Expr is
       end if;
    end Sem_Composite_Expression;
 
-   function Sem_Expression_Universal (Expr : Iir) return Iir
+   --  EXPR must be an expression with type is an overload list.
+   --  Extract and finish the analysis of the expression that is of universal
+   --  type, if there is one and if all types are either integer types or
+   --  floating point types.
+   --  This is used to get rid of implicit conversions.
+   function Sem_Favour_Universal_Type (Expr : Iir) return Iir
    is
-      Expr1 : Iir;
-      Expr_Type : Iir;
-      El : Iir;
+      Expr_Type : constant Iir := Get_Type (Expr);
+      Type_List : constant Iir_List := Get_Overload_List (Expr_Type);
+      --  Extract kind (from the first element).
+      First_El : constant Iir := Get_First_Element (Type_List);
+      Kind : constant Iir_Kind := Get_Kind (Get_Base_Type (First_El));
       Res : Iir;
-      List : Iir_List;
+      El : Iir;
+
       It : List_Iterator;
    begin
-      Expr1 := Sem_Expression_Ov (Expr, Null_Iir);
-      if Expr1 = Null_Iir then
-         return Null_Iir;
-      end if;
-      Expr_Type := Get_Type (Expr1);
-      if Expr_Type = Null_Iir then
-         --  FIXME: improve message
-         Error_Msg_Sem (+Expr, "bad expression for a scalar");
-         return Null_Iir;
-      end if;
-      if not Is_Overload_List (Expr_Type) then
-         return Expr1;
-      end if;
-
-      List := Get_Overload_List (Expr_Type);
       Res := Null_Iir;
-      It := List_Iterate (List);
+
+      It := List_Iterate (Type_List);
       while Is_Valid (It) loop
          El := Get_Element (It);
+         if Get_Kind (Get_Base_Type (El)) /= Kind then
+            --  Must be of the same kind.
+            Res := Null_Iir;
+            exit;
+         end if;
          if El = Universal_Integer_Type_Definition
            or El = Convertible_Integer_Type_Definition
            or El = Universal_Real_Type_Definition
@@ -4648,19 +5031,37 @@ package body Sem_Expr is
             if Res = Null_Iir then
                Res := El;
             else
-               Error_Overload (Expr1);
-               Disp_Overload_List (List, Expr1);
-               return Null_Iir;
+               Res := Null_Iir;
+               exit;
             end if;
          end if;
          Next (It);
       end loop;
+
       if Res = Null_Iir then
-         Error_Overload (Expr1);
-         Disp_Overload_List (List, Expr1);
+         Error_Overload (Expr);
+         Disp_Overload_List (Type_List, Expr);
          return Null_Iir;
       end if;
-      return Sem_Expression_Ov (Expr1, Res);
+
+      return Sem_Expression_Ov (Expr, Res);
+   end Sem_Favour_Universal_Type;
+
+   function Sem_Expression_Universal (Expr : Iir) return Iir
+   is
+      Expr1 : Iir;
+      Expr_Type : Iir;
+   begin
+      Expr1 := Sem_Expression_Wildcard (Expr, Wildcard_Any_Type);
+      Expr_Type := Get_Type (Expr1);
+      if Is_Error (Expr_Type) then
+         return Null_Iir;
+      end if;
+      if not Is_Overload_List (Expr_Type) then
+         return Expr1;
+      else
+         return Sem_Favour_Universal_Type (Expr1);
+      end if;
    end Sem_Expression_Universal;
 
    function Sem_Case_Expression (Expr : Iir) return Iir
@@ -4730,7 +5131,7 @@ package body Sem_Expr is
       Op : Iir;
       Res : Iir;
    begin
-      Op := Create_Iir (Iir_Kind_Condition_Operator);
+      Op := Create_Iir (Iir_Kind_Implicit_Condition_Operator);
       Location_Copy (Op, Cond);
       Set_Operand (Op, Cond);
 
@@ -4765,7 +5166,7 @@ package body Sem_Expr is
          Res := Sem_Expression_Ov (Cond, Null_Iir);
 
          if Res = Null_Iir then
-            --  Error occured.
+            --  Error occurred.
             return Res;
          end if;
 
@@ -4778,7 +5179,7 @@ package body Sem_Expr is
                Check_Read (Res);
                return Res;
             end if;
-         else
+         elsif Get_Type (Res) /= Null_Iir then
             --  Many interpretations.
             declare
                Res_List : constant Iir_List :=

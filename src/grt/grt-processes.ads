@@ -43,10 +43,23 @@ package Grt.Processes is
    --  < 0 in case of failure or stop request.
    function Simulation return Integer;
 
+   --  Broken down version of Simulation.
+   function Simulation_Init return Integer;
+   function Simulation_Cycle return Integer;
+   procedure Simulation_Finish;
+
+   --  True if simulation has reached a user timeout (--stop-time or
+   --  --stop-delta).  Emit an info message as a side effect.
+   function Has_Simulation_Timeout return Boolean;
+
+   --  Updated by Initialization_Phase and Simulation_Cycle to the time of the
+   --  next cycle.  Unchanged in case of delta-cycle.
+   Next_Time : Std_Time;
+
    --  Number of delta cycles.
-   Nbr_Delta_Cycles : Integer;
+   Nbr_Delta_Cycles : Ghdl_I64;
    --  Number of non-delta cycles.
-   Nbr_Cycles : Integer;
+   Nbr_Cycles : Ghdl_I64;
 
    type Process_Type is private;
    --  type Process_Acc is access all Process_Type;
@@ -62,7 +75,7 @@ package Grt.Processes is
    function Get_Nbr_Sensitized_Processes return Natural;
 
    --  Total number of resumed processes.
-   function Get_Nbr_Resumed_Processes return Natural;
+   function Get_Nbr_Resumed_Processes return Long_Long_Integer;
 
    --  Disp the name of process PROC.
    procedure Disp_Process_Name (Stream : Grt.Stdio.FILEs; Proc : Process_Acc);

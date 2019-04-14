@@ -24,7 +24,6 @@ with Std_Names; use Std_Names;
 with Std_Package;
 with Flags; use Flags;
 with PSL.Nodes;
-with Sem_Inst;
 
 package body Iirs_Utils is
    -- Transform the current token into an iir literal.
@@ -177,7 +176,8 @@ package body Iirs_Utils is
             return Name_Op_Plus;
          when Iir_Kind_Absolute_Operator =>
             return Name_Abs;
-         when Iir_Kind_Condition_Operator =>
+         when Iir_Kind_Condition_Operator
+           | Iir_Kind_Implicit_Condition_Operator =>
             return Name_Op_Condition;
          when others =>
             raise Internal_Error;
@@ -435,6 +435,9 @@ package body Iirs_Utils is
             --  Names can denote declared entities [...]
             --  GHDL: in particular, names can denote objects.
             return Name_To_Object (Get_Named_Entity (Name));
+
+         when Iir_Kinds_External_Name =>
+            return Name;
 
          when others =>
             return Null_Iir;
@@ -771,18 +774,19 @@ package body Iirs_Utils is
    is
       Range_Expr : Iir_Range_Expression;
       Literal_List : constant Iir_Flist := Get_Enumeration_Literal_List (Def);
+      List_Len : constant Natural := Get_Nbr_Elements (Literal_List);
    begin
       --  Create a constraint.
       Range_Expr := Create_Iir (Iir_Kind_Range_Expression);
       Location_Copy (Range_Expr, Def);
       Set_Type (Range_Expr, Def);
       Set_Direction (Range_Expr, Iir_To);
-      Set_Left_Limit
-        (Range_Expr,
-         Get_Nth_Element (Literal_List, 0));
-      Set_Right_Limit
-        (Range_Expr,
-         Get_Nth_Element (Literal_List, Get_Nbr_Elements (Literal_List) - 1));
+      if List_Len >= 1 then
+         Set_Left_Limit
+           (Range_Expr, Get_Nth_Element (Literal_List, 0));
+         Set_Right_Limit
+           (Range_Expr, Get_Nth_Element (Literal_List, List_Len - 1));
+      end if;
       Set_Expr_Staticness (Range_Expr, Locally);
       Set_Range_Constraint (Def, Range_Expr);
    end Create_Range_Constraint_For_Enumeration_Type;
@@ -933,20 +937,6 @@ package body Iirs_Utils is
       return Iir_Predefined_Functions'Image (Func);
    end Get_Predefined_Function_Name;
 
-   procedure Mark_Subprogram_Used (Subprg : Iir)
-   is
-      N : Iir;
-   begin
-      N := Subprg;
-      loop
-         exit when Get_Use_Flag (N);
-         Set_Use_Flag (N, True);
-         N := Sem_Inst.Get_Origin (N);
-         --  The origin may also be an instance.
-         exit when N = Null_Iir;
-      end loop;
-   end Mark_Subprogram_Used;
-
    function Get_Callees_List_Holder (Subprg : Iir) return Iir is
    begin
       case Get_Kind (Subprg) is
@@ -1051,6 +1041,7 @@ package body Iirs_Utils is
       if Ind /= Null_Iir
         and then Get_Kind (Ind) in Iir_Kinds_Denoting_Name
       then
+         --  A resolution indication can be an array/record element resolution.
          return Get_Named_Entity (Ind);
       else
          return Null_Iir;
@@ -1188,6 +1179,24 @@ package body Iirs_Utils is
          return Get_Type (Get_Named_Entity (Type_Mark_Name));
       end if;
    end Get_Denoted_Type_Mark;
+
+   function Get_Base_Element_Declaration (El : Iir) return Iir
+   is
+      Rec_Type : constant Iir := Get_Base_Type (Get_Parent (El));
+      Els_List : constant Iir_Flist :=
+        Get_Elements_Declaration_List (Rec_Type);
+   begin
+      return Get_Nth_Element
+        (Els_List, Natural (Get_Element_Position (El)));
+   end Get_Base_Element_Declaration;
+
+   procedure Append_Owned_Element_Constraint (Rec_Type : Iir; El : Iir) is
+   begin
+      pragma Assert (Get_Parent (El) = Rec_Type);
+      Set_Chain (El, Get_Owned_Elements_Chain (Rec_Type));
+      Set_Owned_Elements_Chain (Rec_Type, El);
+   end Append_Owned_Element_Constraint;
+
 
    function Is_Second_Subprogram_Specification (Spec : Iir) return Boolean
    is
@@ -1558,8 +1567,10 @@ package body Iirs_Utils is
       Res : Iir;
    begin
       Res := Create_Iir (Iir_Kind_Error);
-      Set_Error_Origin (Res, Orig);
-      Location_Copy (Res, Orig);
+      if Orig /= Null_Iir then
+         Set_Error_Origin (Res, Orig);
+         Location_Copy (Res, Orig);
+      end if;
       return Res;
    end Create_Error;
 
@@ -1585,6 +1596,17 @@ package body Iirs_Utils is
       Set_Signal_Type_Flag (Res, True);
       return Res;
    end Create_Error_Type;
+
+   function Create_Error_Name (Orig : Iir) return Iir
+   is
+      Res : Iir;
+   begin
+      Res := Create_Iir (Iir_Kind_Error);
+      Set_Expr_Staticness (Res, None);
+      Set_Error_Origin (Res, Orig);
+      Location_Copy (Res, Orig);
+      return Res;
+   end Create_Error_Name;
 
    --  Extract the entity from ASPECT.
    --  Note: if ASPECT is a component declaration, returns ASPECT.
