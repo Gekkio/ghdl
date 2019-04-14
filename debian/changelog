@@ -1,3 +1,9 @@
+ghdl (0.36-0~gekkio1~bionic1) bionic; urgency=medium
+
+  * Pull 0.36 from upstream
+
+ -- Joonas Javanainen <joonas.javanainen@gmail.com>  Sun, 14 Apr 2019 14:02:12 +0300
+
 ghdl (0.35-0~gekkio1~bionic1) bionic; urgency=medium
 
   * Backport for Bionic

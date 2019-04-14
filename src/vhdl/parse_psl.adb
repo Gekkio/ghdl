@@ -16,6 +16,7 @@
 --  Software Foundation, 59 Temple Place - Suite 330, Boston, MA
 --  02111-1307, USA.
 
+with Errorout; use Errorout;
 with PSL.Nodes; use PSL.Nodes;
 with Iirs;
 with Scanner; use Scanner;
@@ -24,6 +25,17 @@ with PSL.Priorities; use PSL.Priorities;
 with Parse;
 
 package body Parse_Psl is
+   procedure Error_Msg_Parse (Msg: String) is
+   begin
+      Report_Msg (Msgid_Error, Errorout.Parse, No_Location, Msg);
+   end Error_Msg_Parse;
+
+   procedure Error_Msg_Parse
+     (Loc : Location_Type; Msg: String; Args : Earg_Arr := No_Eargs) is
+   begin
+      Report_Msg (Msgid_Error, Errorout.Parse, Loc, Msg, Args);
+   end Error_Msg_Parse;
+
    function Create_Node_Loc (K : Nkind) return Node is
       Res : Node;
    begin
@@ -60,6 +72,21 @@ package body Parse_Psl is
       end if;
    end Parse_Count;
 
+   function Psl_To_Vhdl (N : Node) return Iirs.Iir;
+
+   function Binary_Psl_Operator_To_Vhdl (N : Node; Kind : Iirs.Iir_Kind)
+                                        return Iirs.Iir
+   is
+      use Iirs;
+      Res : Iir;
+   begin
+      Res := Create_Iir (Kind);
+      Set_Location (Res, Get_Location (N));
+      Set_Left (Res, Psl_To_Vhdl (Get_Left (N)));
+      Set_Right (Res, Psl_To_Vhdl (Get_Right (N)));
+      return Res;
+   end Binary_Psl_Operator_To_Vhdl;
+
    function Psl_To_Vhdl (N : Node) return Iirs.Iir
    is
       use Iirs;
@@ -68,11 +95,18 @@ package body Parse_Psl is
       case Get_Kind (N) is
          when N_HDL_Expr =>
             Res := Iirs.Iir (Get_HDL_Node (N));
-            Free_Node (N);
-            return Res;
+         when N_And_Prop =>
+            Res := Binary_Psl_Operator_To_Vhdl (N, Iir_Kind_And_Operator);
+         when N_Or_Prop =>
+            Res := Binary_Psl_Operator_To_Vhdl (N, Iir_Kind_Or_Operator);
          when others =>
-            Error_Kind ("psl_to_vhdl", N);
+            Error_Msg_Parse
+              (+N, "PSL construct not allowed as VHDL expression");
+            Res := Create_Iir (Iir_Kind_Error);
+            Set_Location (Res, Get_Location (N));
       end case;
+      Free_Node (N);
+      return Res;
    end Psl_To_Vhdl;
 
    function Vhdl_To_Psl (N : Iirs.Iir) return Node
@@ -92,9 +126,46 @@ package body Parse_Psl is
    function Parse_Parenthesis_Boolean return Node;
    function Parse_Boolean (Parent_Prio : Priority) return Node;
 
-   function Parse_Unary_Boolean return Node is
+   function Parse_Unary_Boolean (Full_Hdl_Expr : Boolean) return Node
+   is
+      use Parse;
+      use Iirs;
+      Left, Expr : Iir;
+      Op : Iir_Kind;
    begin
-      return Vhdl_To_Psl (Parse.Parse_Expression);
+      if Full_Hdl_Expr then
+         Expr := Parse_Expression;
+      else
+         --  Boolean operators must be parse, *except* and/or that could be at
+         --  upper layers (FL).
+         Expr := Parse_Expression (Prio_Relation);
+         loop
+            case Current_Token is
+               when Tok_Xor =>
+                  Op := Iir_Kind_Xor_Operator;
+               when Tok_Nand =>
+                  Op := Iir_Kind_Nand_Operator;
+               when Tok_Nor =>
+                  Op := Iir_Kind_Nor_Operator;
+               when Tok_Xnor =>
+                  Op := Iir_Kind_Xnor_Operator;
+               when others =>
+                  exit;
+            end case;
+
+            Left := Expr;
+            Expr := Create_Iir (Op);
+            Set_Location (Expr, Get_Token_Location);
+            Set_Left (Expr, Left);
+
+            --  Skip operator.
+            Scan;
+
+            Set_Right (Expr, Parse_Expression (Prio_Relation));
+         end loop;
+      end if;
+
+      return Vhdl_To_Psl (Expr);
    end Parse_Unary_Boolean;
 
    function Parse_Boolean_Rhs (Parent_Prio : Priority; Left : Node) return Node
@@ -131,7 +202,7 @@ package body Parse_Psl is
    function Parse_Boolean (Parent_Prio : Priority) return Node
    is
    begin
-      return Parse_Boolean_Rhs (Parent_Prio, Parse_Unary_Boolean);
+      return Parse_Boolean_Rhs (Parent_Prio, Parse_Unary_Boolean (False));
    end Parse_Boolean;
 
    function Parse_Psl_Boolean return PSL_Node is
@@ -162,7 +233,7 @@ package body Parse_Psl is
       Kind : Nkind;
       Op_Prio : Priority;
    begin
-      Left := Parse_Psl_Sequence; --  FIXME: allow boolean;
+      Left := Parse_Psl_Sequence (True);
       loop
          case Current_Token is
             when Tok_Semi_Colon =>
@@ -283,7 +354,7 @@ package body Parse_Psl is
       end if;
    end Parse_Bracket_Number;
 
-   function Parse_Psl_Sequence return Node is
+   function Parse_Psl_Sequence (Full_Hdl_Expr : Boolean) return Node is
       Res, N : Node;
    begin
       case Current_Token is
@@ -314,7 +385,7 @@ package body Parse_Psl is
             return Res;
          when others =>
             --  Repeated_SERE
-            Res := Parse_Unary_Boolean;
+            Res := Parse_Unary_Boolean (Full_Hdl_Expr);
       end case;
       loop
          case Current_Token is
@@ -359,13 +430,26 @@ package body Parse_Psl is
          Error_Msg_Parse ("'(' expected around property");
          return Parse_FL_Property (Prio_Lowest);
       else
+         --  Skip '('.
          Scan;
+
          Res := Parse_FL_Property (Prio_Lowest);
-         if Current_Token /= Tok_Right_Paren then
+         if Current_Token = Tok_Right_Paren then
+            --  Skip ')'.
+            Scan;
+         else
             Error_Msg_Parse ("missing matching ')' for '(' at line "
                                & Image (Loc, False));
-         else
-            Scan;
+         end if;
+
+         if Get_Kind (Res) = N_HDL_Expr then
+            declare
+               N : Iirs.Iir;
+            begin
+               N := Psl_To_Vhdl (Res);
+               N := Parse.Parse_Binary_Expression (N, Parse.Prio_Expression);
+               Res := Vhdl_To_Psl (N);
+            end;
          end if;
          return Res;
       end if;
@@ -445,7 +529,7 @@ package body Parse_Psl is
          when Tok_Left_Paren =>
             return Parse_Parenthesis_FL_Property;
          when Tok_Left_Curly =>
-            Res := Parse_Psl_Sequence;
+            Res := Parse_Psl_Sequence (True);
             if Get_Kind (Res) = N_Braced_SERE
               and then Current_Token = Tok_Left_Paren
             then
@@ -457,7 +541,7 @@ package body Parse_Psl is
                Res := Tmp;
             end if;
          when others =>
-            Res := Parse_Psl_Sequence;
+            Res := Parse_Psl_Sequence (False);
       end case;
       return Res;
    end Parse_FL_Property_1;
@@ -486,6 +570,96 @@ package body Parse_Psl is
       return Res;
    end Parse_Binary_FL_Property;
 
+   --  During LR parsing, phrases before |-> and |=> are parsed as properties,
+   --  but they are in fact sequences.  Convert them (in particular the
+   --  boolean operators need to be rewritten).
+   function Property_To_Sequence (N : Node) return Node
+   is
+      procedure Rewrite_Binary (Res : Node; N : Node) is
+      begin
+         Set_Location (Res, Get_Location (N));
+         Set_Left (Res, Property_To_Sequence (Get_Left (N)));
+         Set_Right (Res, Property_To_Sequence (Get_Right (N)));
+         Free_Node (N);
+      end Rewrite_Binary;
+      Res : Node;
+   begin
+      case Get_Kind (N) is
+         when N_And_Prop =>
+            Res := Create_Node (N_And_Seq);
+            Rewrite_Binary (Res, N);
+            return Res;
+         when N_Or_Prop =>
+            Res := Create_Node (N_Or_Seq);
+            Rewrite_Binary (Res, N);
+            return Res;
+         when N_Before =>
+            Set_Left (N, Property_To_Sequence (Get_Left (N)));
+            Set_Right (N, Property_To_Sequence (Get_Right (N)));
+            return N;
+         when N_Clock_Event
+           | N_Always
+           | N_Never
+           | N_Eventually
+           | N_Until
+           | N_Property_Parameter
+           | N_Property_Instance
+           | N_Endpoint_Instance
+           | N_Strong
+           | N_Abort
+           | N_Next_Event_E
+           | N_Next_Event_A
+           | N_Next_Event
+           | N_Next_E
+           | N_Next_A
+           | N_Next
+           | N_Log_Imp_Prop =>
+            Error_Msg_Parse (+N, "construct not allowed in sequences");
+            return N;
+         when N_Const_Parameter
+           | N_Boolean_Parameter
+           | N_Sequence_Parameter
+           | N_Sequence_Instance
+           | N_Actual
+           | N_And_Seq
+           | N_Or_Seq
+           | N_Imp_Seq
+           | N_Overlap_Imp_Seq
+           | N_Match_And_Seq
+           | N_Star_Repeat_Seq
+           | N_Goto_Repeat_Seq
+           | N_Equal_Repeat_Seq
+           | N_Plus_Repeat_Seq
+           | N_Imp_Bool
+           | N_Or_Bool
+           | N_And_Bool
+           | N_Not_Bool
+           | N_Fusion_SERE
+           | N_HDL_Expr
+           | N_Hdl_Mod_Name
+           | N_Braced_SERE
+           | N_Concat_SERE
+           | N_Within_SERE
+           | N_Clocked_SERE
+           | N_False
+           | N_True
+           | N_Number
+           | N_Name_Decl
+           | N_Name
+           | N_EOS
+           | N_Error =>
+            return N;
+         when N_Vmode
+           | N_Vunit
+           | N_Vprop
+           | N_Assert_Directive
+           | N_Property_Declaration
+           | N_Sequence_Declaration
+           | N_Endpoint_Declaration =>
+            raise Internal_Error;
+      end case;
+   end Property_To_Sequence;
+
    function Parse_FL_Property (Prio : Priority) return Node
    is
       Res : Node;
@@ -508,7 +682,7 @@ package body Parse_Psl is
                   return Res;
                end if;
                N := Create_Node_Loc (N_Overlap_Imp_Seq);
-               Set_Sequence (N, Res);
+               Set_Sequence (N, Property_To_Sequence (Res));
                Scan;
                Set_Property (N, Parse_FL_Property (Prio_Seq_Imp));
                Res := N;
@@ -517,7 +691,7 @@ package body Parse_Psl is
                   return Res;
                end if;
                N := Create_Node_Loc (N_Imp_Seq);
-               Set_Sequence (N, Res);
+               Set_Sequence (N, Property_To_Sequence (Res));
                Scan;
                Set_Property (N, Parse_FL_Property (Prio_Seq_Imp));
                Res := N;
@@ -558,7 +732,8 @@ package body Parse_Psl is
                Res := Parse_Binary_FL_Property (N_And_Prop, Res, Prio_Seq_And);
             when Token_Relational_Operator_Type =>
                return Vhdl_To_Psl
-                 (Parse.Parse_Relation_Rhs (Psl_To_Vhdl (Res)));
+                 (Parse.Parse_Binary_Expression
+                    (Psl_To_Vhdl (Res), Parse.Prio_Relation));
             when Tok_Colon
               | Tok_Bar
               | Tok_Ampersand
@@ -678,7 +853,7 @@ package body Parse_Psl is
             Set_Property (Res, Parse_Psl_Property);
          when N_Sequence_Declaration
            | N_Endpoint_Declaration =>
-            Set_Sequence (Res, Parse_Psl_Sequence);
+            Set_Sequence (Res, Parse_Psl_Sequence (True));
          when others =>
             raise Internal_Error;
       end case;

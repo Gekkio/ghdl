@@ -197,8 +197,12 @@ package body Sem_Psl is
                   Free_Iir (Name);
                end if;
                return Res;
-            when others =>
+            when Iir_Kind_Function_Call
+              | Iir_Kind_Indexed_Name
+              | Iir_Kind_Selected_Element =>
                Expr := Name;
+            when others =>
+               Expr := Name_To_Expression (Expr, Null_Iir);
          end case;
       else
          Expr := Sem_Expr.Sem_Expression (Expr, Null_Iir);
@@ -522,7 +526,6 @@ package body Sem_Psl is
 
    procedure Sem_Psl_Endpoint_Declaration (Stmt : Iir)
    is
-      use Sem_Scopes;
       Decl : constant Node := Get_Psl_Declaration (Stmt);
       Prop : Node;
    begin

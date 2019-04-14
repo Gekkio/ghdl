@@ -55,17 +55,25 @@ package Grt.Lib is
    Error_Severity   : constant Integer := 2;
    Failure_Severity : constant Integer := 3;
 
-   procedure Ghdl_Bound_Check_Failed_L1 (Filename : Ghdl_C_String;
-                                         Line: Ghdl_I32);
+   --  Bound / Direction error.
+   procedure Ghdl_Bound_Check_Failed (Filename : Ghdl_C_String;
+                                      Line: Ghdl_I32);
+   procedure Ghdl_Direction_Check_Failed (Filename : Ghdl_C_String;
+                                          Line: Ghdl_I32);
 
-   --  Program error has occured:
+   --  Program error has occurred:
    --  * configuration of an already configured block.
    procedure Ghdl_Program_Error (Filename : Ghdl_C_String;
                                  Line : Ghdl_I32;
                                  Code : Ghdl_Index_Type);
 
-   function Ghdl_Integer_Exp (V : Ghdl_I32; E : Ghdl_I32)
-     return Ghdl_I32;
+   function Ghdl_I32_Exp (V : Ghdl_I32; E : Std_Integer) return Ghdl_I32;
+   function Ghdl_I64_Exp (V : Ghdl_I64; E : Std_Integer) return Ghdl_I64;
+
+   --  Called before allocation of large (complex) objects.
+   procedure Ghdl_Check_Stack_Allocation (Size : Ghdl_Index_Type);
+
+   Max_Stack_Allocation : Ghdl_Index_Type := 128 * 1024;
 
    function Ghdl_Malloc (Size : Ghdl_Index_Type) return Ghdl_Ptr;
 
@@ -113,15 +121,21 @@ private
    pragma Export (C, Ghdl_Psl_Cover_Failed, "__ghdl_psl_cover_failed");
    pragma Export (C, Ghdl_Report, "__ghdl_report");
 
-   pragma Export (C, Ghdl_Bound_Check_Failed_L1,
-                  "__ghdl_bound_check_failed_l1");
+   pragma Export (C, Ghdl_Bound_Check_Failed,
+                  "__ghdl_bound_check_failed");
+   pragma Export (C, Ghdl_Direction_Check_Failed,
+                  "__ghdl_direction_check_failed");
    pragma Export (C, Ghdl_Program_Error, "__ghdl_program_error");
+
+   pragma Export (C, Ghdl_Check_Stack_Allocation,
+                  "__ghdl_check_stack_allocation");
 
    pragma Export (C, Ghdl_Malloc, "__ghdl_malloc");
    pragma Export (C, Ghdl_Malloc0, "__ghdl_malloc0");
    pragma Export (C, Ghdl_Deallocate, "__ghdl_deallocate");
 
-   pragma Export (C, Ghdl_Integer_Exp, "__ghdl_integer_exp");
+   pragma Export (C, Ghdl_I32_Exp, "__ghdl_i32_exp");
+   pragma Export (C, Ghdl_I64_Exp, "__ghdl_i64_exp");
    pragma Export (C, Ghdl_Real_Exp, "__ghdl_real_exp");
 
    pragma Export (C, Ghdl_Std_Ulogic_To_Boolean_Array,

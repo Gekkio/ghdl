@@ -27,6 +27,9 @@ package Scanner is
    -- It can be replaced by a function call.
    Current_Token: Token_Type := Tok_Invalid;
 
+   --  Maximal length for identifiers.
+   Max_Name_Length : constant Natural := 1024;
+
    -- Simply set current_token to tok_invalid.
    procedure Invalidate_Current_Token;
    pragma Inline (Invalidate_Current_Token);
@@ -41,6 +44,13 @@ package Scanner is
    function Current_String_Length return Nat32;
    pragma Inline (Current_String_Id);
    pragma Inline (Current_String_Length);
+
+   --  When the current token is Tok_Bit_String, return the base ('b', 'o',
+   --  'x' or 'd') and the sign ('s', 'u', or ' ' for none).
+   function Get_Bit_String_Base return Character;
+   function Get_Bit_String_Sign return Character;
+   pragma Inline (Get_Bit_String_Base);
+   pragma Inline (Get_Bit_String_Sign);
 
    -- Set Current_identifier to null_identifier.
    -- Can be used to catch bugs.
@@ -101,16 +111,22 @@ package Scanner is
    --  False (used by PSL).
    function Scan_Underscore return Boolean;
 
-   -- Get the current location, or the location of the current token.
-   -- Since a token cannot spread over lines, file and line of the current
-   -- token are the same as those of the current position.
+   --  Get the current location, or the location of the current token.
+   --  Since a token cannot spread over lines, file and line of the current
+   --  token are the same as those of the current position.
+   --  The offset is the offset in the current line.
    function Get_Current_Source_File return Source_File_Entry;
    function Get_Current_Line return Natural;
-   function Get_Current_Column return Natural;
-   function Get_Token_Location return Location_Type;
-   function Get_Token_Column return Natural;
-   function Get_Token_Position return Source_Ptr;
+   function Get_Current_Offset return Natural;
    function Get_Position return Source_Ptr;
+   function Get_Token_Location return Location_Type;
+   function Get_Token_Offset return Natural;
+   function Get_Token_Position return Source_Ptr;
+
+   --  Return the initial location before the current token (ie before all
+   --  the blanks, comments and newlines have been skipped).  Useful for the
+   --  location of a missing token.
+   function Get_Prev_Location return Location_Type;
 
    --  Convert (canonicalize) an identifier stored in name_buffer/name_length.
    --  Upper case letters are converted into lower case.
@@ -119,7 +135,7 @@ package Scanner is
    --  given in the command line.
    --  Errors are directly reported through error_msg_option.
    --  Also, Vhdl_Std should be set.
-   procedure Convert_Identifier;
+   procedure Convert_Identifier (Str : in out String);
 
    --  Return TRUE iff C is a whitespace.
    --  LRM93 13.2 Lexical elements, separators, and delimiters

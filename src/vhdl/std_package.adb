@@ -15,15 +15,14 @@
 --  along with GHDL; see the file COPYING.  If not, write to the Free
 --  Software Foundation, 59 Temple Place - Suite 330, Boston, MA
 --  02111-1307, USA.
-with Types; use Types;
+
 with Files_Map;
 with Name_Table;
 with Str_Table;
 with Std_Names; use Std_Names;
 with Flags; use Flags;
 with Iirs_Utils;
-with Sem;
-with Sem_Decls;
+with Sem_Utils;
 with Iir_Chains;
 
 package body Std_Package is
@@ -33,8 +32,17 @@ package body Std_Package is
    High_Bound : constant Bound_Array := (False => (2 ** 31) - 1,
                                          True => (2 ** 63) - 1);
 
-   Std_Location: Location_Type := Location_Nil;
    Std_Filename : Name_Id := Null_Identifier;
+
+   --  Could be public.
+   Time_Fs_Unit: Iir_Unit_Declaration;
+   Time_Ps_Unit: Iir_Unit_Declaration;
+   Time_Ns_Unit: Iir_Unit_Declaration;
+   Time_Us_Unit: Iir_Unit_Declaration;
+   Time_Ms_Unit: Iir_Unit_Declaration;
+   Time_Sec_Unit: Iir_Unit_Declaration;
+   Time_Min_Unit: Iir_Unit_Declaration;
+   Time_Hr_Unit: Iir_Unit_Declaration;
 
    function Create_Std_Iir (Kind : Iir_Kind) return Iir
    is
@@ -73,8 +81,8 @@ package body Std_Package is
       end Create_Known_Iir;
    begin
       Std_Filename := Name_Table.Get_Identifier ("*std_standard*");
-      Std_Location := Files_Map.Source_File_To_Location
-        (Files_Map.Create_Virtual_Source_File (Std_Filename));
+      Std_Source_File := Files_Map.Create_Virtual_Source_File (Std_Filename);
+      Std_Location := Files_Map.File_To_Location (Std_Source_File);
 
       if Create_Iir_Error /= Error_Mark then
          raise Internal_Error;
@@ -166,7 +174,7 @@ package body Std_Package is
          Set_Expr_Staticness (Res, Locally);
          Set_Name_Staticness (Res, Locally);
          Set_Enum_Pos (Res, Iir_Int32 (Pos));
-         Sem.Compute_Subprogram_Hash (Res);
+         Sem_Utils.Compute_Subprogram_Hash (Res);
          Set_Nth_Element (List, Pos, Res);
          return Res;
       end Create_Std_Literal;
@@ -187,7 +195,7 @@ package body Std_Package is
       is
          Nxt : Iir;
       begin
-         Sem_Decls.Create_Implicit_Operations (Decl, True);
+         Sem_Utils.Create_Implicit_Operations (Decl, True);
 
          --  Update Last_Decl
          loop
@@ -351,7 +359,7 @@ package body Std_Package is
             Set_Chain (Inter, Inter2);
          end if;
 
-         Sem.Compute_Subprogram_Hash (Decl);
+         Sem_Utils.Compute_Subprogram_Hash (Decl);
          Add_Decl (Decl);
       end Create_To_String;
 
@@ -376,7 +384,7 @@ package body Std_Package is
          Set_Visible_Flag (Inter, True);
          Set_Interface_Declaration_Chain (Decl, Inter);
 
-         Sem.Compute_Subprogram_Hash (Decl);
+         Sem_Utils.Compute_Subprogram_Hash (Decl);
          Add_Decl (Decl);
       end Create_Edge_Function;
 
@@ -402,7 +410,6 @@ package body Std_Package is
       Set_Design_File_Filename (Std_Standard_File, Std_Filename);
 
       declare
-         use Str_Table;
          Std_Time_Stamp : constant Time_Stamp_String :=
            "20020601000000.000";
          Id : Time_Stamp_Id;
@@ -825,14 +832,6 @@ package body Std_Package is
             Append (Last_Unit, Time_Type_Definition, Unit);
          end Create_Unit;
 
-         Time_Fs_Unit: Iir_Unit_Declaration;
-         Time_Ps_Unit: Iir_Unit_Declaration;
-         Time_Ns_Unit: Iir_Unit_Declaration;
-         Time_Us_Unit: Iir_Unit_Declaration;
-         Time_Ms_Unit: Iir_Unit_Declaration;
-         Time_Sec_Unit: Iir_Unit_Declaration;
-         Time_Min_Unit: Iir_Unit_Declaration;
-         Time_Hr_Unit: Iir_Unit_Declaration;
          Constraint : Iir_Range_Expression;
       begin
          if Vhdl_Std >= Vhdl_93c then
@@ -909,28 +908,6 @@ package body Std_Package is
          Set_Subtype_Definition
            (Time_Type_Declaration, Time_Subtype_Definition);
 
-         -- The default time base.
-         case Flags.Time_Resolution is
-            when 'f' =>
-               Time_Base := Time_Fs_Unit;
-            when 'p' =>
-               Time_Base := Time_Ps_Unit;
-            when 'n' =>
-               Time_Base := Time_Ns_Unit;
-            when 'u' =>
-               Time_Base := Time_Us_Unit;
-            when 'm' =>
-               Time_Base := Time_Ms_Unit;
-            when 's' =>
-               Time_Base := Time_Sec_Unit;
-            when 'M' =>
-               Time_Base := Time_Min_Unit;
-            when 'h' =>
-               Time_Base := Time_Hr_Unit;
-            when others =>
-               raise Internal_Error;
-         end case;
-
          --  VHDL93
          --  subtype DELAY_LENGTH is TIME range 0 to TIME'HIGH
          if Vhdl_Std >= Vhdl_93c then
@@ -991,7 +968,7 @@ package body Std_Package is
             Set_Pure_Flag (Function_Now, False);
          end if;
          Set_Implicit_Definition (Function_Now, Iir_Predefined_Now_Function);
-         Sem.Compute_Subprogram_Hash (Function_Now);
+         Sem_Utils.Compute_Subprogram_Hash (Function_Now);
          Add_Decl (Function_Now);
       end;
 
@@ -1281,4 +1258,94 @@ package body Std_Package is
       Set_Error_Origin (Error_Type, Null_Iir);
       Create_Wildcard_Type (Error_Type, "unknown type");
    end Create_Std_Standard_Package;
+
+   procedure Set_Time_Resolution (Resolution : Character)
+   is
+      Unit : Iir;
+      Prim : Iir;
+      Rng : Iir;
+   begin
+      case Resolution is
+         when 'f' =>
+            Prim := Time_Fs_Unit;
+         when 'p' =>
+            Prim := Time_Ps_Unit;
+         when 'n' =>
+            Prim := Time_Ns_Unit;
+         when 'u' =>
+            Prim := Time_Us_Unit;
+         when 'm' =>
+            Prim := Time_Ms_Unit;
+         when 's' =>
+            Prim := Time_Sec_Unit;
+         when 'M' =>
+            Prim := Time_Min_Unit;
+         when 'h' =>
+            Prim := Time_Hr_Unit;
+         when others =>
+            raise Internal_Error;
+      end case;
+
+      --  Adjust range of TIME subtype.
+      Rng := Get_Range_Constraint (Time_Subtype_Definition);
+      Set_Physical_Unit (Get_Left_Limit (Rng), Prim);
+      Set_Physical_Unit (Get_Right_Limit (Rng), Prim);
+
+      --  Adjust range of DELAY_LENGTH.
+      if Vhdl_Std >= Vhdl_93c then
+         Rng := Get_Range_Constraint (Delay_Length_Subtype_Definition);
+         Set_Physical_Unit (Get_Left_Limit (Rng), Prim);
+         Set_Physical_Unit (Get_Right_Limit (Rng), Prim);
+      end if;
+
+      Unit := Get_Unit_Chain (Time_Type_Definition);
+      while Unit /= Null_Iir loop
+         declare
+            Lit : constant Iir := Get_Physical_Literal (Unit);
+            Orig : constant Iir := Get_Literal_Origin (Lit);
+            Lit_Unit : Iir;
+         begin
+            if Prim = Null_Iir then
+               --  Primary already set, just recompute values.
+               Lit_Unit := Get_Physical_Literal (Get_Physical_Unit (Orig));
+               Set_Value (Lit, Get_Value (Orig) * Get_Value (Lit_Unit));
+            elsif Unit = Prim then
+               Set_Value (Lit, 1);
+               Prim := Null_Iir;
+            else
+               Set_Value (Lit, 0);
+            end if;
+         end;
+         Unit := Get_Chain (Unit);
+      end loop;
+   end Set_Time_Resolution;
+
+   function Get_Minimal_Time_Resolution return Character is
+   begin
+      if Get_Use_Flag (Time_Fs_Unit) then
+         return 'f';
+      end if;
+      if Get_Use_Flag (Time_Ps_Unit) then
+         return 'p';
+      end if;
+      if Get_Use_Flag (Time_Ns_Unit) then
+         return 'n';
+      end if;
+      if Get_Use_Flag (Time_Us_Unit) then
+         return 'u';
+      end if;
+      if Get_Use_Flag (Time_Ms_Unit) then
+         return 'm';
+      end if;
+      if Get_Use_Flag (Time_Sec_Unit) then
+         return 's';
+      end if;
+      if Get_Use_Flag (Time_Min_Unit) then
+         return 'M';
+      end if;
+      if Get_Use_Flag (Time_Hr_Unit) then
+         return 'h';
+      end if;
+      return '?';
+   end Get_Minimal_Time_Resolution;
 end Std_Package;

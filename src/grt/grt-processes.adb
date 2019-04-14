@@ -28,6 +28,7 @@ with System.Storage_Elements; --  Work around GNAT bug.
 pragma Unreferenced (System.Storage_Elements);
 with Grt.Disp;
 with Grt.Astdio;
+with Grt.Astdio.Vhdl; use Grt.Astdio.Vhdl;
 with Grt.Errors; use Grt.Errors;
 with Grt.Options;
 with Grt.Rtis_Addr; use Grt.Rtis_Addr;
@@ -76,12 +77,12 @@ package body Grt.Processes is
    Postponed_Resume_Process_Table : Process_Acc_Array_Acc;
    Last_Postponed_Resume_Process : Natural := 0;
 
-   --  Number of postponed processes.
+   --  Number of processes.
    Nbr_Postponed_Processes : Natural := 0;
    Nbr_Non_Postponed_Processes : Natural := 0;
 
    --  Number of resumed processes.
-   Nbr_Resumed_Processes : Natural := 0;
+   Nbr_Resumed_Processes : Long_Long_Integer := 0;
 
    --  Earliest time out within non-sensitized processes.
    Process_First_Timeout : Std_Time := Last_Time;
@@ -104,6 +105,11 @@ package body Grt.Processes is
                                         Timeout_Chain_Next => null,
                                         Timeout_Chain_Prev => null);
       Set_Current_Process (Elab_Process);
+
+      --  LRM93 12.3 Elaboration of a declarative part
+      --  During static elaboration, the function STD.STANDARD.NOW (see 14.2)
+      --  returns the vallue 0 ns.
+      Current_Time := 0;
    end Init;
 
    function Get_Nbr_Processes return Natural is
@@ -123,7 +129,7 @@ package body Grt.Processes is
       return Res;
    end Get_Nbr_Sensitized_Processes;
 
-   function Get_Nbr_Resumed_Processes return Natural is
+   function Get_Nbr_Resumed_Processes return Long_Long_Integer is
    begin
       return Nbr_Resumed_Processes;
    end Get_Nbr_Resumed_Processes;
@@ -767,7 +773,8 @@ package body Grt.Processes is
          Last := Last_Resume_Process;
          Last_Resume_Process := 0;
       end if;
-      Nbr_Resumed_Processes := Nbr_Resumed_Processes + Last;
+      Nbr_Resumed_Processes :=
+        Nbr_Resumed_Processes + Long_Long_Integer (Last);
 
       if Options.Nbr_Threads = 1 then
          for I in 1 .. Last loop
@@ -808,10 +815,6 @@ package body Grt.Processes is
       end if;
    end Run_Processes;
 
-   --  Updated by Initialization_Phase and Simulation_Cycle to the time of the
-   --  next cycle.  Unchanged in case of delta-cycle.
-   Next_Time : Std_Time;
-
    procedure Initialization_Phase
    is
       Status : Integer;
@@ -826,7 +829,9 @@ package body Grt.Processes is
       --  LRM93 12.6.4
       --  At the beginning of initialization, the current time, Tc, is assumed
       --  to be 0 ns.
-      Current_Time := 0;
+      --
+      --  GHDL: already initialized before elaboration.
+      pragma Assert (Current_Time = 0);
 
       --  The initialization phase consists of the following steps:
       --  - The driving value and the effective value of each explicitly
@@ -868,16 +873,12 @@ package body Grt.Processes is
             Next_Time := Compute_Next_Time;
          end if;
       end if;
-      if Next_Time /= 0 then
-         Update_Active_Chain;
-      end if;
 
       --  Clear current_delta, will be set by Simulation_Cycle.
       Current_Delta := 0;
    end Initialization_Phase;
 
    --  Launch a simulation cycle.
-   --  Set FINISHED to true if this is the last cycle.
    function Simulation_Cycle return Integer
    is
       Tn : Std_Time;
@@ -889,8 +890,11 @@ package body Grt.Processes is
       --  a) The current time, Tc is set equal to Tn.  Simulation is complete
       --     when Tn = TIME'HIGH and there are no active drivers or process
       --     resumptions at Tn.
-      --  GHDL: this is done at the last step of the cycle.
-      null;
+      --  GHDL: the check is done at the last step of the cycle.
+      Current_Time := Next_Time;
+      if Grt.Options.Disp_Time then
+         Grt.Disp.Disp_Now;
+      end if;
 
       --  b) The following actions occur in the indicated order:
       --     1) If the current simulation cycle is not a delta cycle, each
@@ -935,8 +939,8 @@ package body Grt.Processes is
 
       --  f) The following actions occur in the indicated order:
       --     2) For each process P, if P is currently sensitive to a signal S
-      --        and if an event has occured on S in this simulation cycle, then
-      --        P resumes.
+      --        and if an event has occurred on S in this simulation cycle,
+      --        then P resumes.
       if Current_Time = Process_First_Timeout then
          --  There are processes to awake.
          Tn := Last_Time;
@@ -1048,9 +1052,15 @@ package body Grt.Processes is
             Tn := Compute_Next_Time;
          end if;
 
-         Update_Active_Chain;
          Next_Time := Tn;
          Current_Delta := 0;
+
+         --  Statistics.
+         Nbr_Cycles := Nbr_Cycles + 1;
+
+         --  For wave dumpers.
+         Grt.Hooks.Call_Cycle_Hooks;
+
          return Run_Resumed;
       end if;
 
@@ -1059,11 +1069,15 @@ package body Grt.Processes is
          return Run_Finished;
       else
          Current_Delta := Current_Delta + 1;
+
+         --  Statistics.
+         Nbr_Delta_Cycles := Nbr_Delta_Cycles + 1;
+
          return Run_Resumed;
       end if;
    end Simulation_Cycle;
 
-   procedure Simulation_Init
+   function Simulation_Init return Integer
    is
       use Options;
    begin
@@ -1088,7 +1102,36 @@ package body Grt.Processes is
          --  zero after initialization.
          Grt.Hooks.Call_Cycle_Hooks;
       end if;
+
+      return 0;
    end Simulation_Init;
+
+   function Has_Simulation_Timeout return Boolean
+   is
+      use Options;
+   begin
+      if Next_Time > Stop_Time
+        and then Next_Time /= Std_Time'Last
+      then
+         --  FIXME: Implement with a callback instead ?  This could be done
+         --  in 2 steps: an after_delay for the time and then a read_only
+         --  to finish the current cycle.  Note that no message should be
+         --  printed if the simulation is already finished at the stop time.
+         Info_S ("simulation stopped by --stop-time @");
+         Diag_C_Now;
+         Info_E;
+         return True;
+      elsif Current_Delta >= Stop_Delta then
+         Info_S ("simulation stopped @");
+         Diag_C_Now;
+         Diag_C (" by --stop-delta=");
+         Diag_C (Stop_Delta);
+         Info_E;
+         return True;
+      else
+         return False;
+      end if;
+   end Has_Simulation_Timeout;
 
    function Simulation_Main_Loop return Integer
    is
@@ -1096,45 +1139,21 @@ package body Grt.Processes is
       Status : Integer;
    begin
       loop
-         --  Update time.  This is the only place where Current_Time is
-         --  updated.
-         Current_Time := Next_Time;
-         if Disp_Time then
-            Grt.Disp.Disp_Now;
-         end if;
-
          Status := Simulation_Cycle;
+
+         --  Simulation has been stopped/finished by vpi.
          exit when Status = Run_Stop;
 
          if Trace_Signals then
             Grt.Disp_Signals.Disp_All_Signals;
          end if;
 
-         --  Statistics.
-         if Current_Delta = 0 then
-            Nbr_Cycles := Nbr_Cycles + 1;
-         else
-            Nbr_Delta_Cycles := Nbr_Delta_Cycles + 1;
-         end if;
-
+         --  Simulation is finished.
          exit when Status = Run_Finished;
-         if Next_Time > Stop_Time
-           and then Next_Time /= Std_Time'Last
-         then
-            --  FIXME: Implement with a callback instead ?  This could be done
-            --  in 2 steps: an after_delay for the time and then a read_only
-            --  to finish the current cycle.  Note that no message should be
-            --  printed if the simulation is already finished at the stop time.
-            Info ("simulation stopped by --stop-time");
-            exit;
-         end if;
 
-         if Current_Delta = 0 then
-            Grt.Hooks.Call_Cycle_Hooks;
-         end if;
-
-         if Current_Delta >= Stop_Delta then
-            Error ("simulation stopped by --stop-delta");
+         --  Simulation is stopped by user timeout.
+         if Has_Simulation_Timeout then
+            Status := Run_Limit;
             exit;
          end if;
       end loop;
@@ -1157,7 +1176,8 @@ package body Grt.Processes is
    is
       Status : Integer;
    begin
-      Simulation_Init;
+      Status := Simulation_Init;
+      pragma Assert (Status = 0);
 
       Status := Simulation_Main_Loop;
 

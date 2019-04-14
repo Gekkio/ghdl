@@ -9,6 +9,8 @@ from libghdl.nodes_meta import (Attr, types)
 Null_Iir = 0
 Null_Iir_List = 0
 
+def name_image(nameid):
+    return thin.Get_Name_Ptr(nameid).decode('utf-8')
 
 def _build_enum_image(cls):
     d = [e for e in dir(cls) if e[0] != '_']
@@ -48,6 +50,17 @@ _attr_image = _build_enum_image(nodes_meta.Attr)
 def attr_image(a):
     """String representation of Nodes_Meta.Attr a"""
     return _attr_image[a]
+
+
+def leftest_location(n):
+    while True:
+        if n == Null_Iir:
+            return No_Location
+        k = iirs.Get_Kind(n)
+        if k == iirs.Iir_Kind.Array_Subtype_Definition:
+            n = iirs.Get_Subtype_Type_Mark(n)
+        else:
+            return iirs.Get_Location(n)
 
 
 def fields_iter(n):
@@ -194,6 +207,7 @@ def declarations_iter(n):
         if n1 != Null_Iir:
             for n2 in declarations_iter(n1):
                 yield n2
+    # All these nodes are handled:
     if k in [iirs.Iir_Kind.Entity_Declaration,
              iirs.Iir_Kind.Architecture_Body,
              iirs.Iir_Kind.Package_Declaration,
@@ -248,7 +262,11 @@ def declarations_iter(n):
 def concurrent_stmts_iter(n):
     """Iterator on concurrent statements in n."""
     k = iirs.Get_Kind(n)
-    if k == iirs.Iir_Kind.Design_Unit:
+    if k == iirs.Iir_Kind.Design_File:
+        for n1 in chain_iter(iirs.Get_First_Design_Unit(n)):
+            for n2 in concurrent_stmts_iter(n1):
+                yield n2
+    elif k == iirs.Iir_Kind.Design_Unit:
         for n1 in concurrent_stmts_iter(iirs.Get_Library_Unit(n)):
             yield n1
     elif k == iirs.Iir_Kind.Entity_Declaration \
@@ -275,3 +293,115 @@ def concurrent_stmts_iter(n):
                 for n2 in concurrent_stmts_iter(
                         iirs.Get_Generate_Statement_Body(n)):
                     yield n2
+
+
+def constructs_iter(n):
+    """Iterator on library unit, concurrent statements and declarations
+       that appear directly within a declarative part."""
+    if n == thin.Null_Iir:
+        return
+    k = iirs.Get_Kind(n)
+    if k == iirs.Iir_Kind.Design_File:
+        for n1 in chain_iter(iirs.Get_First_Design_Unit(n)):
+            for n2 in constructs_iter(n1):
+                yield n2
+    elif k == iirs.Iir_Kind.Design_Unit:
+        n1 = iirs.Get_Library_Unit(n)
+        yield n1
+        for n2 in constructs_iter(n1):
+            yield n2
+    elif k in [iirs.Iir_Kind.Entity_Declaration,
+               iirs.Iir_Kind.Architecture_Body,
+               iirs.Iir_Kind.Block_Statement,
+               iirs.Iir_Kind.Generate_Statement_Body]:
+        for n1 in chain_iter(iirs.Get_Declaration_Chain(n)):
+            yield n1
+            for n2 in constructs_iter(n1):
+                yield n2
+        for n1 in chain_iter(iirs.Get_Concurrent_Statement_Chain(n)):
+            yield n1
+            for n2 in constructs_iter(n1):
+                yield n2
+    elif k in [iirs.Iir_Kind.Configuration_Declaration,
+               iirs.Iir_Kind.Package_Declaration,
+               iirs.Iir_Kind.Package_Body,
+               iirs.Iir_Kind.Function_Body,
+               iirs.Iir_Kind.Procedure_Body,
+               iirs.Iir_Kind.Protected_Type_Declaration,
+               iirs.Iir_Kind.Protected_Type_Body,
+               iirs.Iir_Kind.Process_Statement,
+               iirs.Iir_Kind.Sensitized_Process_Statement]:
+        for n1 in chain_iter(iirs.Get_Declaration_Chain(n)):
+            yield n1
+            for n2 in constructs_iter(n1):
+                yield n2
+    elif k == iirs.Iir_Kind.For_Generate_Statement:
+        n1 = iirs.Get_Generate_Statement_Body(n)
+        yield n1
+        for n2 in constructs_iter(n1):
+            yield n2
+    elif k == iirs.Iir_Kind.If_Generate_Statement:
+        while n != Null_Iir:
+            n1 = iirs.Get_Generate_Statement_Body(n)
+            yield n1
+            for n2 in constructs_iter(n1):
+                yield n2
+            n = iirs.Get_Generate_Else_Clause(n)
+    elif k == iirs.Iir_Kind.Case_Generate_Statement:
+        alt = iirs.Get_Case_Statement_Alternative_Chain(n)
+        for n1 in chain_iter(alt):
+            blk = iirs.Get_Associated_Block(n1)
+            if blk != Null_Iir:
+                n2 = iirs.Get_Generate_Statement_Body(blk)
+                yield n2
+                for n3 in constructs_iter(n2):
+                    yield n3
+
+def sequential_iter(n):
+    """Iterator on sequential statements.  The first node must be either
+       a process or a subprogram body."""
+    if n == thin.Null_Iir:
+        return
+    k = iirs.Get_Kind(n)
+    if k in [iirs.Iir_Kind.Process_Statement,
+             iirs.Iir_Kind.Sensitized_Process_Statement,
+             iirs.Iir_Kind.Function_Body,
+             iirs.Iir_Kind.Procedure_Body]:
+        for n1 in chain_iter(iirs.Get_Sequential_Statement_Chain(n)):
+            yield n1
+            for n2 in sequential_iter(n1):
+                yield n2
+    elif k == iirs.Iir_Kind.If_Statement:
+        while True:
+            n = iirs.Get_Chain(n)
+            if n == thin.Null_Iir:
+                break
+            yield n
+            for n1 in sequential_iter(n):
+                yield n1
+    elif k == iirs.Iir_Kind.Case_Statement:
+        for ch in chain_iter(iirs.Get_Case_Statement_Alternative_Chain(n)):
+            stmt = iirs.Get_Associated_Chain(ch)
+            if stmt != thin.Null_Iir:
+                for n1 in chain_iter(stmt):
+                    yield n1
+                    for n2 in sequential_iter(n1):
+                        yield n2
+    elif k in [iirs.Iir_Kind.For_Loop_Statement,
+               iirs.Iir_Kind.While_Loop_Statement]:
+        for n1 in chain_iter(iirs.Get_Sequential_Statement_Chain(n)):
+            yield n1
+            for n2 in sequential_iter(n1):
+                yield n2
+    elif k in [iirs.Iir_Kind.Assertion_Statement,
+               iirs.Iir_Kind.Wait_Statement,
+               iirs.Iir_Kind.Null_Statement,
+               iirs.Iir_Kind.Exit_Statement,
+               iirs.Iir_Kind.Next_Statement,
+               iirs.Iir_Kind.Return_Statement,
+               iirs.Iir_Kind.Variable_Assignment_Statement,
+               iirs.Iir_Kind.Simple_Signal_Assignment_Statement,
+               iirs.Iir_Kind.Procedure_Call_Statement]:
+        return
+    else:
+        assert False, "unknown node of kind {}".format(kind_image(k))

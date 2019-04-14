@@ -164,11 +164,13 @@ package body Trans.Chap9 is
       Ports : Iir;
 
       Mark, Mark2 : Id_Mark_Type;
-      Assoc, Inter, Conv, In_Type : Iir;
+      Assoc, Inter : Iir;
+      Num : Iir_Int32;
       Has_Conv_Record      : Boolean := False;
    begin
       Info := Add_Info (Inst, Kind_Block);
       Push_Identifier_Prefix (Mark, Get_Label (Inst));
+      Num := 0;
 
       if Is_Component_Instantiation (Inst) then
          --  Via a component declaration.
@@ -191,7 +193,7 @@ package body Trans.Chap9 is
       end if;
 
       --  When conversions are used, the subtype of the actual (or of the
-      --  formal for out conversions) may not be yet translated.  This
+      --  formal for formal conversions) may not be yet translated.  This
       --  can happen if the name is a slice.
       --  We need to translate it and create variables in the instance
       --  because it will be referenced by the conversion subprogram.
@@ -200,25 +202,41 @@ package body Trans.Chap9 is
       while Assoc /= Null_Iir loop
          if Get_Kind (Assoc) = Iir_Kind_Association_Element_By_Expression
          then
-            Conv := Get_Actual_Conversion (Assoc);
-            In_Type := Get_Type (Get_Actual (Assoc));
-            if Conv /= Null_Iir
-              and then Is_Anonymous_Type_Definition (In_Type)
-            then
-               --  Lazy creation of the record.
-               if not Has_Conv_Record then
-                  Has_Conv_Record := True;
-                  Push_Instance_Factory (Info.Block_Scope'Access);
-               end if;
+            declare
+               Act_Conv : constant Iir := Get_Actual_Conversion (Assoc);
+               Act_Type : constant Iir := Get_Type (Get_Actual (Assoc));
+               Form_Conv : constant Iir := Get_Formal_Conversion (Assoc);
+               Formal : constant Iir := Get_Formal (Assoc);
+               Need_Actual : constant Boolean := Act_Conv /= Null_Iir
+                 and then Is_Anonymous_Type_Definition (Act_Type);
+               Need_Formal : constant Boolean := Form_Conv /= Null_Iir
+                 and then Is_Anonymous_Type_Definition (Get_Type (Formal));
+            begin
+               if Need_Actual or Need_Formal then
+                  --  Lazy creation of the record.
+                  if not Has_Conv_Record then
+                     Has_Conv_Record := True;
+                     Push_Instance_Factory (Info.Block_Scope'Access);
+                  end if;
 
-               --  FIXME: handle with overload multiple case on the same
-               --  formal.
-               Push_Identifier_Prefix
-                 (Mark2,
-                  Get_Identifier (Get_Association_Interface (Assoc, Inter)));
-               Chap3.Translate_Type_Definition (In_Type, True);
-               Pop_Identifier_Prefix (Mark2);
-            end if;
+                  --  FIXME: handle with overload multiple case on the same
+                  --  formal.
+                  Push_Identifier_Prefix
+                    (Mark2,
+                     Get_Identifier
+                       (Get_Association_Interface (Assoc, Inter)), Num);
+                  Num := Num + 1;
+                  if Need_Actual then
+                     Chap3.Translate_Anonymous_Subtype_Definition
+                       (Act_Type, True);
+                  end if;
+                  if Need_Formal then
+                     Chap3.Translate_Anonymous_Subtype_Definition
+                       (Get_Type (Formal), True);
+                  end if;
+                  Pop_Identifier_Prefix (Mark2);
+               end if;
+            end;
          end if;
          Next_Association_Interface (Assoc, Inter);
       end loop;
@@ -308,9 +326,6 @@ package body Trans.Chap9 is
 
    procedure Translate_Psl_Directive_Declarations (Stmt : Iir)
    is
-      use PSL.Nodes;
-      use PSL.NFAs;
-
       Mark : Id_Mark_Type;
       Info : Ortho_Info_Acc;
    begin
@@ -372,7 +387,7 @@ package body Trans.Chap9 is
                   return New_Compare_Op
                     (ON_Eq,
                      Res,
-                     New_Lit (Get_Ortho_Expr (Bit_1)),
+                     New_Lit (Get_Ortho_Literal (Bit_1)),
                      Get_Ortho_Type (Boolean_Type_Definition, Mode_Value));
                elsif Rtype = Ieee.Std_Logic_1164.Std_Ulogic_Type then
                   return New_Value
@@ -413,8 +428,8 @@ package body Trans.Chap9 is
    procedure Create_Psl_Final_Proc
      (Stmt : Iir; Base : Block_Info_Acc; Instance : out O_Dnode)
    is
-      Inter_List : O_Inter_List;
       Info       : constant Psl_Info_Acc := Get_Info (Stmt);
+      Inter_List : O_Inter_List;
    begin
       Start_Procedure_Decl (Inter_List, Create_Identifier ("FINALPROC"),
                             O_Storage_Private);
@@ -423,15 +438,83 @@ package body Trans.Chap9 is
       Finish_Subprogram_Decl (Inter_List, Info.Psl_Proc_Final_Subprg);
    end Create_Psl_Final_Proc;
 
+   --  Create an independant procedure to report coverage, as it is needed
+   --  twice and the expression must not be translated twice.
+   procedure Translate_Psl_Report
+     (Stmt : Iir; Base : Block_Info_Acc; Proc : out O_Dnode)
+   is
+      Inter_List : O_Inter_List;
+      Instance   : O_Dnode;
+      Pass       : O_Dnode;
+      Loc        : O_Dnode;
+      Msg_Var    : O_Dnode;
+      Blk        : O_If_Block;
+      Expr       : Iir;
+      Assocs     : O_Assoc_List;
+   begin
+      Start_Procedure_Decl (Inter_List, Create_Identifier ("REPORTPROC"),
+                            O_Storage_Private);
+      New_Interface_Decl (Inter_List, Instance, Wki_Instance,
+                          Base.Block_Decls_Ptr_Type);
+      New_Interface_Decl (Inter_List, Pass, Get_Identifier ("pass_fail"),
+                          Ghdl_Bool_Type);
+      Finish_Subprogram_Decl (Inter_List, Proc);
+
+      Start_Subprogram_Body (Proc);
+      Push_Local_Factory;
+      --  Push scope for architecture declarations.
+      Set_Scope_Via_Param_Ptr (Base.Block_Scope, Instance);
+
+      Loc := Chap4.Get_Location (Stmt);
+      New_Var_Decl (Msg_Var, Get_Identifier ("msg"), O_Storage_Local,
+                    Std_String_Ptr_Node);
+      Expr := Get_Report_Expression (Stmt);
+      if Expr = Null_Iir then
+         New_Assign_Stmt (New_Obj (Msg_Var),
+                          New_Lit (New_Null_Access (Std_String_Ptr_Node)));
+      else
+         New_Assign_Stmt
+           (New_Obj (Msg_Var),
+            Chap7.Translate_Expression (Expr, String_Type_Definition));
+      end if;
+
+      Start_If_Stmt (Blk, New_Obj_Value (Pass));
+
+      Start_Association (Assocs, Ghdl_Psl_Cover);
+      New_Association (Assocs, New_Obj_Value (Msg_Var));
+      New_Association (Assocs, New_Lit (Get_Ortho_Literal
+                                          (Severity_Level_Note)));
+      New_Association (Assocs, New_Address (New_Obj (Loc),
+                                            Ghdl_Location_Ptr_Node));
+      New_Procedure_Call (Assocs);
+
+      New_Else_Stmt (Blk);
+
+      Start_Association (Assocs, Ghdl_Psl_Cover_Failed);
+      New_Association (Assocs, New_Obj_Value (Msg_Var));
+      New_Association (Assocs, New_Lit (Get_Ortho_Literal
+                                          (Severity_Level_Error)));
+      New_Association (Assocs, New_Address (New_Obj (Loc),
+                                            Ghdl_Location_Ptr_Node));
+      New_Procedure_Call (Assocs);
+
+      Finish_If_Stmt (Blk);
+
+      Clear_Scope (Base.Block_Scope);
+      Pop_Local_Factory;
+      Finish_Subprogram_Body;
+   end Translate_Psl_Report;
+
    procedure Translate_Psl_Directive_Statement
      (Stmt : Iir; Base : Block_Info_Acc)
    is
       use PSL.NFAs;
+      Info       : constant Psl_Info_Acc := Get_Info (Stmt);
       Inter_List : O_Inter_List;
       Instance   : O_Dnode;
-      Info       : constant Psl_Info_Acc := Get_Info (Stmt);
       Var_I      : O_Dnode;
       Var_Nvec   : O_Dnode;
+      Report_Proc : O_Dnode;
       Label      : O_Snode;
       Clk_Blk    : O_If_Block;
       S_Blk      : O_If_Block;
@@ -443,7 +526,15 @@ package body Trans.Chap9 is
       Cond       : O_Enode;
       NFA        : PSL_NFA;
       D_Lit      : O_Cnode;
+      Assocs     : O_Assoc_List;
    begin
+      case Get_Kind (Stmt) is
+         when Iir_Kind_Psl_Cover_Statement =>
+            Translate_Psl_Report (Stmt, Base, Report_Proc);
+         when others =>
+            null;
+      end case;
+
       Start_Procedure_Decl (Inter_List, Create_Identifier ("PROC"),
                             O_Storage_Private);
       New_Interface_Decl (Inter_List, Instance, Wki_Instance,
@@ -556,8 +647,10 @@ package body Trans.Chap9 is
                  (Stmt, Ghdl_Psl_Assert_Failed, Severity_Level_Error);
             when Iir_Kind_Psl_Cover_Statement =>
                if Get_Report_Expression (Stmt) /= Null_Iir then
-                  Chap8.Translate_Report
-                     (Stmt, Ghdl_Psl_Cover, Severity_Level_Note);
+                  Start_Association (Assocs, Report_Proc);
+                  New_Association (Assocs, New_Obj_Value (Instance));
+                  New_Association (Assocs, New_Lit (Ghdl_Bool_True_Node));
+                  New_Procedure_Call (Assocs);
                end if;
             when others =>
                Error_Kind ("Translate_Psl_Directive_Statement", Stmt);
@@ -661,8 +754,10 @@ package body Trans.Chap9 is
                                New_Value (Get_Var (Info.Psl_Count_Var)),
                                New_Lit (Ghdl_Index_0),
                                Ghdl_Bool_Type));
-            Chap8.Translate_Report
-              (Stmt, Ghdl_Psl_Cover_Failed, Severity_Level_Error);
+            Start_Association (Assocs, Report_Proc);
+            New_Association (Assocs, New_Obj_Value (Instance));
+            New_Association (Assocs, New_Lit (Ghdl_Bool_False_Node));
+            New_Procedure_Call (Assocs);
             Finish_If_Stmt (S_Blk);
 
             Clear_Scope (Base.Block_Scope);
@@ -910,7 +1005,7 @@ package body Trans.Chap9 is
               (New_Selected_Element (Get_Instance_Ref (Ref_Scope),
                Comp_Field),
                Rtis.Ghdl_Component_Link_Stmt),
-            New_Lit (Rtis.Get_Context_Rti (Stmt)));
+            Rtis.Get_Context_Rti (Stmt));
       end Set_Component_Link;
 
       Info : constant Block_Info_Acc := Get_Info (Stmt);
@@ -1163,6 +1258,15 @@ package body Trans.Chap9 is
          Fields    : constant Fields_Array := Get_Fields (Kind);
          F         : Fields_Enum;
       begin
+         case Kind is
+            when Iir_Kind_Object_Alias_Declaration =>
+               --  No types to free, don't try to recurse as the name can be
+               --  a slice (which will then be freed).
+               return;
+            when others =>
+               null;
+         end case;
+
          for I in Fields'Range loop
             F := Fields (I);
             case F is
@@ -1241,6 +1345,7 @@ package body Trans.Chap9 is
                  | Type_File_Checksum_Id
                  | Type_String8_Id
                  | Type_Source_Ptr
+                 | Type_Source_File_Entry
                  | Type_Number_Base_Type
                  | Type_Iir_Constraint
                  | Type_Iir_Mode
@@ -1292,8 +1397,8 @@ package body Trans.Chap9 is
       if Val = Mnode_Null then
          return Mnode_Null;
       else
-         return Chap3.Index_Base (Chap3.Get_Composite_Base (Val),
-                                  Targ_Type, New_Obj_Value (Index));
+         return Chap6.Translate_Indexed_Name_By_Offset
+           (Chap6.Stabilize_If_Unbounded (Val), Targ_Type, Index);
       end if;
    end Foreach_Non_Composite_Update_Data_Array_Mnode;
 
@@ -1593,7 +1698,7 @@ package body Trans.Chap9 is
                      --  From the port default value.
                      if Is_Valid (Get_Default_Value (Base)) then
                         Chap3.Translate_Object_Copy
-                          (Drv_Node, M2E (Chap6.Get_Port_Init_Value (Base)),
+                          (Drv_Node, Chap6.Get_Port_Init_Value (Base),
                            Base_Type);
                      else
                         Chap4.Init_Object (Drv_Node, Base_Type);
@@ -2503,9 +2608,8 @@ package body Trans.Chap9 is
       New_Association
         (Assoc, New_Convert_Ov (New_Value (M2Lv (Targ)), Ghdl_Signal_Ptr));
       New_Association
-        (Assoc,
-         New_Lit (New_Global_Unchecked_Address
-                    (Get_Info (Sig).Signal_Rti, Rtis.Ghdl_Rti_Access)));
+        (Assoc, New_Unchecked_Address (New_Obj (Get_Info (Sig).Signal_Rti),
+                                       Rtis.Ghdl_Rti_Access));
       New_Procedure_Call (Assoc);
    end Merge_Signals_Rti_Non_Composite;
 

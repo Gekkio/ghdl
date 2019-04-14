@@ -81,7 +81,7 @@ package Sem_Names is
 
    --  Convert name NAME to an expression (ie, can create function call).
    --  A_TYPE is the expected type of the expression.
-   --  FIXME: it is unclear wether the result must be an expression or not
+   --  FIXME: it is unclear whether the result must be an expression or not
    --  (ie, it *must* have a type, but may be a range).
    function Name_To_Expression (Name : Iir; A_Type : Iir) return Iir;
 
@@ -156,7 +156,4 @@ package Sem_Names is
 
    --  Emit an error for NAME that doesn't match its class CLASS_NAME.
    procedure Error_Class_Match (Name : Iir; Class_Name : String);
-
-   --  Create an error node for name ORIG; set its expr staticness to none.
-   function Create_Error_Name (Orig : Iir) return Iir;
 end Sem_Names;

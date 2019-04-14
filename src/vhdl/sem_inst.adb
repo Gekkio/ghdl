@@ -21,7 +21,7 @@ with Types; use Types;
 with Files_Map;
 with Iirs_Utils; use Iirs_Utils;
 with Errorout; use Errorout;
-with Sem;
+with Sem_Utils;
 
 package body Sem_Inst is
    --  Table of origin.  This is an extension of vhdl nodes to track the
@@ -148,6 +148,9 @@ package body Sem_Inst is
    --  The virtual file for the instance.
    Instance_File : Source_File_Entry;
 
+   --  True if currently instantiated a shared generic.
+   Is_Within_Shared_Instance : Boolean := False;
+
    --  Get the new location.
    function Relocate (Loc : Location_Type) return Location_Type is
    begin
@@ -159,6 +162,17 @@ package body Sem_Inst is
          return Loc;
       end if;
    end Relocate;
+
+   procedure Create_Relocation (Inst : Iir; Orig : Iir)
+   is
+      use Files_Map;
+      Orig_File : Source_File_Entry;
+      Pos : Source_Ptr;
+   begin
+      Location_To_File_Pos (Get_Location (Orig), Orig_File, Pos);
+      Instance_File := Create_Instance_Source_File
+        (Orig_File, Get_Location (Inst), Inst);
+   end Create_Relocation;
 
    function Instantiate_Iir (N : Iir; Is_Ref : Boolean) return Iir;
 
@@ -322,6 +336,8 @@ package body Sem_Inst is
             Set_String8_Id (Res, F, Get_String8_Id (N, F));
          when Type_Source_Ptr =>
             Set_Source_Ptr (Res, F, Get_Source_Ptr (N, F));
+         when Type_Source_File_Entry =>
+            Set_Source_File_Entry (Res, F, Get_Source_File_Entry (N, F));
          when Type_Date_Type
            | Type_Date_State_Type
            | Type_Time_Stamp_Id
@@ -449,6 +465,10 @@ package body Sem_Inst is
                      Set_Index_Subtype_List (Res, List);
                   end;
 
+               when Field_Simple_Aggregate_List =>
+                  Set_Simple_Aggregate_List
+                    (Res, Get_Simple_Aggregate_List (N));
+
                when Field_Subprogram_Body =>
                   --  This is a forward reference.  Not yet solved.
                   Set_Subprogram_Body (Res, Null_Iir);
@@ -556,11 +576,51 @@ package body Sem_Inst is
                   null;
                when Field_Package =>
                   Instantiate_Iir_Field (Res, N, F);
-                  Set_Package_Body (Get_Package (Res), Res);
+                  declare
+                     Pkg : constant Iir := Get_Package (Res);
+                  begin
+                     --  The current node can be the body of a package; in that
+                     --  case set the forward link.
+                     --  Or it can be the body of an instantiated package; in
+                     --  that case there is no forward link.
+                     if Get_Kind (Pkg) = Iir_Kind_Package_Declaration then
+                        Set_Package_Body (Get_Package (Res), Res);
+                     end if;
+                  end;
+
+               when Field_Instance_Package_Body =>
+                  --  Do not instantiate the body of a package while
+                  --  instantiating a shared package.
+                  if not Is_Within_Shared_Instance then
+                     Instantiate_Iir_Field (Res, N, F);
+                  end if;
 
                when Field_Subtype_Definition =>
                   --  TODO
                   null;
+
+               when Field_Instance_Source_File =>
+                  Set_Instance_Source_File
+                    (Res, Files_Map.Create_Instance_Source_File
+                       (Get_Instance_Source_File (N),
+                        Get_Location (Res), Res));
+
+               when Field_Generic_Chain
+                 | Field_Declaration_Chain =>
+                  if Kind = Iir_Kind_Package_Instantiation_Declaration then
+                     declare
+                        Prev_Instance_File : constant Source_File_Entry :=
+                          Instance_File;
+                     begin
+                        --  Also relocate the instantiated declarations.
+                        Instance_File := Get_Instance_Source_File (Res);
+                        pragma Assert (Instance_File /= No_Source_File_Entry);
+                        Instantiate_Iir_Field (Res, N, F);
+                        Instance_File := Prev_Instance_File;
+                     end;
+                  else
+                     Instantiate_Iir_Field (Res, N, F);
+                  end if;
 
                when others =>
                   --  Common case.
@@ -625,7 +685,7 @@ package body Sem_Inst is
             when Iir_Kind_Interface_Type_Declaration =>
                Set_Type (Res, Get_Type (Inter));
             when Iir_Kinds_Interface_Subprogram_Declaration =>
-               Sem.Compute_Subprogram_Hash (Res);
+               Sem_Utils.Compute_Subprogram_Hash (Res);
             when others =>
                Error_Kind ("instantiate_generic_chain", Res);
          end case;
@@ -924,30 +984,24 @@ package body Sem_Inst is
       return Res;
    end Copy_Tree;
 
-   procedure Create_Relocation (Inst : Iir; Orig : Iir)
-   is
-      use Files_Map;
-      Orig_File : Source_File_Entry;
-      Pos : Source_Ptr;
-   begin
-      Location_To_File_Pos (Get_Location (Orig), Orig_File, Pos);
-      Instance_File := Create_Instance_Source_File
-        (Orig_File, Get_Location (Inst), Inst);
-   end Create_Relocation;
-
    procedure Instantiate_Package_Declaration (Inst : Iir; Pkg : Iir)
    is
       Header : constant Iir := Get_Package_Header (Pkg);
       Prev_Instance_File : constant Source_File_Entry := Instance_File;
       Mark : constant Instance_Index_Type := Prev_Instance_Table.Last;
+      Prev_Within_Shared_Instance : constant Boolean :=
+        Is_Within_Shared_Instance;
    begin
       Create_Relocation (Inst, Pkg);
+      Set_Instance_Source_File (Inst, Instance_File);
 
       --  Be sure Get_Origin_Priv can be called on existing nodes.
       Expand_Origin_Table;
 
       --  For Parent: the instance of PKG is INST.
       Set_Origin (Pkg, Inst);
+
+      Is_Within_Shared_Instance := not Get_Macro_Expanded_Flag (Pkg);
 
       Set_Generic_Chain
         (Inst, Instantiate_Generic_Chain (Inst, Get_Generic_Chain (Header)));
@@ -959,6 +1013,8 @@ package body Sem_Inst is
 
       Instance_File := Prev_Instance_File;
       Restore_Origin (Mark);
+
+      Is_Within_Shared_Instance := Prev_Within_Shared_Instance;
    end Instantiate_Package_Declaration;
 
    function Instantiate_Package_Body (Inst : Iir) return Iir

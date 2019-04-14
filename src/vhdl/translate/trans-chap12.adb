@@ -26,6 +26,7 @@ with Name_Table;
 with Libraries;
 with Flags;
 with Sem;
+with Sem_Lib; use Sem_Lib;
 with Trans.Chap1;
 with Trans.Chap2;
 with Trans.Chap6;
@@ -85,11 +86,9 @@ package body Trans.Chap12 is
         (Assoc, New_Lit (New_Unsigned_Literal (Ghdl_Index_Type,
                                                Unsigned_64 (Elab_Nbr_Pkgs))));
       New_Association
-        (Assoc, New_Lit (New_Global_Address
-                           (Pkgs_Arr, Rtis.Ghdl_Rti_Arr_Acc)));
+        (Assoc, New_Address (New_Obj (Pkgs_Arr), Rtis.Ghdl_Rti_Arr_Acc));
       New_Association
-        (Assoc,
-         New_Lit (Rtis.New_Rti_Address (Get_Info (Arch).Block_Rti_Const)));
+        (Assoc, Rtis.New_Rti_Address (Get_Info (Arch).Block_Rti_Const));
       New_Association
         (Assoc, New_Convert_Ov (Arch_Instance, Ghdl_Ptr_Type));
       New_Procedure_Call (Assoc);
@@ -98,8 +97,7 @@ package body Trans.Chap12 is
       Start_Association (Assoc, Ghdl_Rti_Add_Package);
       New_Association
         (Assoc,
-         New_Lit (Rtis.New_Rti_Address
-                    (Get_Info (Standard_Package).Package_Rti_Const)));
+         Rtis.New_Rti_Address (Get_Info (Standard_Package).Package_Rti_Const));
       New_Procedure_Call (Assoc);
    end Call_Elab_Decls;
 
@@ -363,7 +361,7 @@ package body Trans.Chap12 is
 
       Decl : Iir;
    begin
-      Libraries.Load_Design_Unit (Unit, Null_Iir);
+      Load_Design_Unit (Unit, Null_Iir);
       Pkg := Get_Library_Unit (Unit);
       Reset_Identifier_Prefix;
       Lib := Get_Library (Get_Design_File (Get_Design_Unit (Pkg)));
@@ -424,10 +422,7 @@ package body Trans.Chap12 is
    --  Write to file FILELIST all the files that are needed to link the design.
    procedure Gen_Stubs
    is
-      use Interfaces.C_Streams;
-      use System;
       use Configuration;
-      use Name_Table;
 
       --  Add all dependences of UNIT.
       --  UNIT is not used, but added during link.
@@ -440,7 +435,7 @@ package body Trans.Chap12 is
          Lib_Unit : Iir;
       begin
          --  Load the unit in memory to compute the dependence list.
-         Libraries.Load_Design_Unit (Unit, Null_Iir);
+         Load_Design_Unit (Unit, Null_Iir);
          Update_Node_Infos;
 
          Set_Elab_Flag (Unit, True);
@@ -556,6 +551,7 @@ package body Trans.Chap12 is
       F := fopen (Fname'Address, Mode'Address);
       if F = NULL_Stream then
          Error_Msg_Elab ("cannot open " & Filelist);
+         return;
       end if;
 
       --  Clear elab flags on design files.
@@ -590,27 +586,20 @@ package body Trans.Chap12 is
       R := fclose (F);
    end Write_File_List;
 
-   procedure Elaborate (Primary : String;
-                        Secondary : String;
+   procedure Elaborate (Config : Iir_Design_Unit;
                         Filelist : String;
                         Whole : Boolean)
    is
-      use Name_Table;
       use Configuration;
 
       Unit : Iir_Design_Unit;
       Lib_Unit : Iir;
-      Config : Iir_Design_Unit;
       Config_Lib : Iir_Configuration_Declaration;
       Entity : Iir_Entity_Declaration;
       Arch : Iir_Architecture_Body;
       Conf_Info : Config_Info_Acc;
       Last_Design_Unit : Natural;
    begin
-      Config := Configure (Primary, Secondary);
-      if Config = Null_Iir then
-         return;
-      end if;
       Config_Lib := Get_Library_Unit (Config);
       Entity := Get_Entity (Config_Lib);
       Arch := Strip_Denoting_Name
@@ -679,10 +668,12 @@ package body Trans.Chap12 is
 
          case Get_Kind (Lib_Unit) is
             when Iir_Kind_Configuration_Declaration =>
-               --  Always generate code for configuration.
-               --  Because default binding may be changed between analysis
-               --  and elaboration.
-               Translate (Unit, True);
+               if Get_Identifier (Lib_Unit) /= Null_Identifier then
+                  --  Always generate code for configuration.
+                  --  Because default binding may be changed between analysis
+                  --  and elaboration.
+                  Translate (Unit, True);
+               end if;
             when Iir_Kind_Entity_Declaration
               | Iir_Kind_Architecture_Body
               | Iir_Kind_Package_Declaration
@@ -702,9 +693,21 @@ package body Trans.Chap12 is
          end case;
       end loop;
 
+      for I in Design_Units.First .. Design_Units.Last loop
+         Unit := Design_Units.Table (I);
+         Lib_Unit := Get_Library_Unit (Unit);
+         if Get_Kind (Lib_Unit) = Iir_Kind_Configuration_Declaration
+           and then Get_Identifier (Lib_Unit) = Null_Identifier
+         then
+            --  Because of possible indirect recursion, translate default
+            --  configuration at the end.
+            Translate (Unit, True);
+         end if;
+      end loop;
+
       --  Generate code to elaboration body-less package.
       --
-      --  When a package is analyzed, we don't know wether there is body
+      --  When a package is analyzed, we don't know whether there is body
       --  or not.  Therefore, we assume there is always a body, and will
       --  elaborate the body (which elaborates its spec).  If a package
       --  has no body, create the body elaboration procedure.

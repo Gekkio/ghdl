@@ -15,7 +15,7 @@
 --  along with GHDL; see the file COPYING.  If not, write to the Free
 --  Software Foundation, 59 Temple Place - Suite 330, Boston, MA
 --  02111-1307, USA.
-with Ada.Text_IO;
+with Logging; use Logging;
 with Tables;
 with Flags; use Flags;
 with Name_Table; -- use Name_Table;
@@ -183,8 +183,7 @@ package body Sem_Scopes is
       for I in 0 .. Name_Table.Last_Name_Id loop
          Inter := Get_Interpretation (I);
          if Inter > Last then
-            Ada.Text_IO.Put_Line
-              ("bad interpretation for " & Name_Table.Image (I));
+            Log_Line ("bad interpretation for " & Name_Table.Image (I));
             Err := True;
          end if;
       end loop;
@@ -404,6 +403,33 @@ package body Sem_Scopes is
       return Inter >= Current_Region_Start;
    end Is_In_Current_Declarative_Region;
 
+   --  Emit a warning when DECL hides PREV_DECL.
+   procedure Warning_Hide (Decl : Iir; Prev_Decl : Iir)
+   is
+   begin
+      if Get_Kind (Decl) in Iir_Kinds_Interface_Declaration
+        and then Get_Kind (Get_Parent (Decl)) = Iir_Kind_Component_Declaration
+      then
+         --  Do not warn when an interface in a component hides a declaration.
+         --  This is a common case (eg: in testbenches), and there is no real
+         --  hiding.
+         return;
+      end if;
+
+      if Get_Kind (Decl) = Iir_Kind_Element_Declaration then
+         --  Do not warn for record elements.  They are used by selection.
+         return;
+      end if;
+
+      if Decl = Prev_Decl then
+         --  Can happen in configuration.  No real hidding.
+         return;
+      end if;
+
+      Warning_Msg_Sem (Warnid_Hide, +Decl,
+                       "declaration of %i hides %n", (+Decl, +Prev_Decl));
+   end Warning_Hide;
+
    --  Add interpretation DECL to the identifier of DECL.
    --  POTENTIALLY is true if the identifier comes from a use clause.
    procedure Add_Name (Decl : Iir; Ident : Name_Id; Potentially : Boolean)
@@ -428,13 +454,19 @@ package body Sem_Scopes is
          Last_In_Region := Ident;
       end Add_New_Interpretation;
    begin
-      if not Valid_Interpretation (Current_Inter) then
+      if Ident = Null_Identifier then
+         --  Missing identifier can happen only in case of parse error.
+         pragma Assert (Flags.Flag_Force_Analysis);
+         return;
+      end if;
+
+      if not Valid_Interpretation (Raw_Inter) then
          --  Very simple: no hidding, no overloading.
          Add_New_Interpretation (True);
          return;
       end if;
 
-      if Is_Conflict_Declaration (Current_Inter) then
+      if Is_Conflict_Declaration (Raw_Inter) then
          if Potentially then
             --  Yet another conflicting interpretation.
             return;
@@ -614,10 +646,8 @@ package body Sem_Scopes is
                --  1. A potentially visible declaration is not made
                --     directly visible if the place considered is within the
                --     immediate scope of a homograph of the declaration.
-               if Is_In_Current_Declarative_Region (Homograph) then
-                  if not Is_Potentially_Visible (Homograph) then
-                     return;
-                  end if;
+               if not Is_Potentially_Visible (Homograph) then
+                  return;
                end if;
 
                --  LRM08 12.4 Use Clauses
@@ -826,59 +856,60 @@ package body Sem_Scopes is
       --  The current interpretation and the new one aren't overloadable, ie
       --  they are homograph (well almost).
 
-      if Is_In_Current_Declarative_Region (Current_Inter) then
-         --  They are perhaps visible in the same declarative region.
-         if Is_Potentially_Visible (Current_Inter) then
-            if Potentially then
-               --  LRM93 10.4 2) / LRM08 12.4 c) Use clauses
-               --  Potentially visible declarations that have the same
-               --  designator are not made directly visible unless each of
-               --  them is either an enumeration literal specification or
-               --  the declaration of a subprogram.
-               if Decl = Get_Declaration (Current_Inter) then
-                  -- The rule applies only for distinct declaration.
-                  -- This handles 'use p.all; use P.all;'.
-                  -- FIXME: this should have been handled at the start of
-                  -- this subprogram.
-                  raise Internal_Error;
-                  return;
-               end if;
-
-               --  LRM08 12.3 Visibility
-               --  Each of two declarations is said to be a homograph of the
-               --  other if and only if both declarations have the same
-               --  designator; and they denote different named entities, [...]
-               if Flags.Vhdl_Std >= Vhdl_08 then
-                  if Strip_Non_Object_Alias (Decl)
-                    = Strip_Non_Object_Alias (Current_Decl)
-                  then
-                     return;
-                  end if;
-               end if;
-
-               --  Conflict.
-               Add_New_Interpretation (True, Null_Iir);
-               return;
-            else
-               --  LRM93 10.4 item #1
-               --  A potentially visible declaration is not made directly
-               --  visible if the place considered is within the immediate
-               --  scope of a homograph of the declaration.
-               --  GHDL: Could directly replace the previous interpretation
-               --  (added in same scope), but don't do that for entity
-               --  declarations, since it is used to find default binding.
-               Add_New_Interpretation (True);
+      if Is_Potentially_Visible (Current_Inter) then
+         if Potentially then
+            --  LRM93 10.4 2) / LRM08 12.4 c) Use clauses
+            --  Potentially visible declarations that have the same
+            --  designator are not made directly visible unless each of
+            --  them is either an enumeration literal specification or
+            --  the declaration of a subprogram.
+            if Decl = Get_Declaration (Current_Inter) then
+               -- The rule applies only for distinct declaration.
+               -- This handles 'use p.all; use P.all;'.
+               -- FIXME: this should have been handled at the start of
+               -- this subprogram.
+               raise Internal_Error;
                return;
             end if;
+
+            --  LRM08 12.3 Visibility
+            --  Each of two declarations is said to be a homograph of the
+            --  other if and only if both declarations have the same
+            --  designator; and they denote different named entities, [...]
+            if Flags.Vhdl_Std >= Vhdl_08 then
+               if Strip_Non_Object_Alias (Decl)
+                 = Strip_Non_Object_Alias (Current_Decl)
+               then
+                  return;
+               end if;
+            end if;
+
+            --  Conflict.
+            Add_New_Interpretation (True, Null_Iir);
+            return;
          else
-            --  There is already a declaration in the current scope.
-            if Potentially then
-               -- LRM93 §10.4 item #1
-               -- Discard the new and potentially visible declaration.
-               -- However, add the type.
-               -- FIXME: Add_In_Visible_List (Ident, Decl);
-               return;
-            else
+            --  LRM93 10.4 item #1
+            --  A potentially visible declaration is not made directly
+            --  visible if the place considered is within the immediate
+            --  scope of a homograph of the declaration.
+            --  GHDL: Could directly replace the previous interpretation
+            --  (added in same scope), but don't do that for entity
+            --  declarations, since it is used to find default binding.
+            Add_New_Interpretation (True);
+            return;
+         end if;
+      else
+         --  There is already a declaration in the current scope.
+         if Potentially then
+            -- LRM93 §10.4 item #1
+            -- Discard the new and potentially visible declaration.
+            -- However, add the type.
+            -- FIXME: Add_In_Visible_List (Ident, Decl);
+            return;
+         else
+            if Is_In_Current_Declarative_Region (Current_Inter) then
+               --  They are perhaps visible in the same declarative region.
+
                --  LRM93 11.2
                --  If two or more logical names having the same
                --  identifier appear in library clauses in the same
@@ -909,17 +940,24 @@ package body Sem_Scopes is
                Error_Msg_Sem
                  (+Current_Decl, "previous declaration: %n", +Current_Decl);
                return;
+            else
+               --  Homograph, not in the same scope.
+               --  LRM §10.3:
+               --  A declaration is said to be hidden within (part of) an inner
+               --  declarative region if the inner region contains an homograph
+               --  of this declaration; the outer declaration is the hidden
+               --  within the immediate scope of the inner homograph.
+               if Is_Warning_Enabled (Warnid_Hide)
+                 and then not Is_Potentially_Visible (Current_Inter)
+               then
+                  Warning_Hide (Decl, Current_Decl);
+               end if;
+
+               Add_New_Interpretation (True);
+               return;
             end if;
          end if;
       end if;
-
-      -- Homograph, not in the same scope.
-      -- LRM §10.3:
-      -- A declaration is said to be hidden within (part of) an inner
-      -- declarative region if the inner region contains an homograph
-      -- of this declaration; the outer declaration is the hidden
-      -- within the immediate scope of the inner homograph.
-      Add_New_Interpretation (True);
    end Add_Name;
 
    procedure Add_Name (Decl: Iir) is
@@ -1467,10 +1505,20 @@ package body Sem_Scopes is
       Cl := Clause;
       loop
          Name := Get_Selected_Name (Cl);
-         if Get_Kind (Name) = Iir_Kind_Selected_By_All_Name then
-            Use_All_Names (Get_Named_Entity (Get_Prefix (Name)));
+         if Name = Null_Iir then
+            pragma Assert (Flags.Flag_Force_Analysis);
+            null;
          else
-            Use_Selected_Name (Get_Named_Entity (Name));
+            if Get_Kind (Name) = Iir_Kind_Selected_By_All_Name then
+               Name := Get_Prefix (Name);
+               if not Is_Error (Name) then
+                  Use_All_Names (Get_Named_Entity (Name));
+               end if;
+            else
+               if not Is_Error (Name) then
+                  Use_Selected_Name (Get_Named_Entity (Name));
+               end if;
+            end if;
          end if;
          Cl := Get_Use_Clause_Chain (Cl);
          exit when Cl = Null_Iir;
@@ -1492,100 +1540,90 @@ package body Sem_Scopes is
 
    procedure Disp_Detailed_Interpretations (Ident : Name_Id)
    is
-      use Ada.Text_IO;
-      use Name_Table;
-
       Inter: Name_Interpretation_Type;
       Decl : Iir;
    begin
-      Put (Name_Table.Image (Ident));
-      Put_Line (":");
+      Log (Name_Table.Image (Ident));
+      Log_Line (":");
 
       Inter := Get_Interpretation (Ident);
       while Valid_Interpretation (Inter) loop
-         Put (Name_Interpretation_Type'Image (Inter));
+         Log (Name_Interpretation_Type'Image (Inter));
          if Is_Potentially_Visible (Inter) then
-            Put (" (use)");
+            Log (" (use)");
          end if;
-         Put (":");
+         Log (":");
          Decl := Get_Declaration (Inter);
-         Put (Iir'Image (Decl));
-         Put (':');
-         Put (Iir_Kind'Image (Get_Kind (Decl)));
-         Put_Line (", loc: " & Image (Get_Location (Decl)));
+         Log (Iir'Image (Decl));
+         Log (":");
+         Log (Iir_Kind'Image (Get_Kind (Decl)));
+         Log_Line (", loc: " & Image (Get_Location (Decl)));
          if Get_Kind (Decl) in Iir_Kinds_Subprogram_Declaration then
-            Put_Line ("   " & Disp_Subprg (Decl));
+            Log_Line ("   " & Disp_Subprg (Decl));
          end if;
          Inter := Get_Next_Interpretation (Inter);
       end loop;
    end Disp_Detailed_Interpretations;
 
    procedure Disp_All_Interpretations
-     (Interpretation: Name_Interpretation_Type)
+     (Interpretation : Name_Interpretation_Type)
    is
-      use Ada.Text_IO;
       Inter: Name_Interpretation_Type;
    begin
       Inter := Interpretation;
       while Valid_Interpretation (Inter) loop
-         Put (Name_Interpretation_Type'Image (Inter));
-         Put ('.');
-         Put (Iir_Kind'Image (Get_Kind (Get_Declaration (Inter))));
+         Log (Name_Interpretation_Type'Image (Inter));
+         Log (".");
+         Log (Iir_Kind'Image (Get_Kind (Get_Declaration (Inter))));
          Inter := Get_Next_Interpretation (Inter);
       end loop;
-      New_Line;
+      Log_Line;
    end Disp_All_Interpretations;
 
    procedure Disp_All_Names
    is
-      use Ada.Text_IO;
       Inter: Name_Interpretation_Type;
    begin
       for I in 0 .. Name_Table.Last_Name_Id loop
          Inter := Get_Interpretation (I);
          if Valid_Interpretation (Inter) then
-            Put (Name_Table.Image (I));
-            Put (Name_Id'Image (I));
-            Put (':');
+            Log (Name_Table.Image (I));
+            Log (Name_Id'Image (I));
+            Log (":");
             Disp_All_Interpretations (Inter);
          end if;
       end loop;
-      Put_Line ("interprations.last = "
+      Log_Line ("interprations.last = "
                 & Name_Interpretation_Type'Image (Interpretations.Last));
-      Put_Line ("current_region_start ="
+      Log_Line ("current_region_start ="
                 & Name_Interpretation_Type'Image (Current_Region_Start));
    end Disp_All_Names;
 
    procedure Dump_Interpretation (Inter : Name_Interpretation_Type)
    is
-      use Ada.Text_IO;
-      use Name_Table;
-
       Decl : Iir;
    begin
-      Put (Name_Interpretation_Type'Image (Inter));
+      Log (Name_Interpretation_Type'Image (Inter));
       if Is_Potentially_Visible (Inter) then
-         Put (" (use)");
+         Log (" (use)");
       end if;
-      Put (": ");
+      Log (": ");
       Decl := Get_Declaration (Inter);
       if Decl = Null_Iir then
-         Put_Line ("null: conflict");
+         Log_Line ("null: conflict");
       else
-         Put (Iir_Kind'Image (Get_Kind (Decl)));
-         Put_Line (", loc: " & Image (Get_Location (Decl)));
+         Log (Iir_Kind'Image (Get_Kind (Decl)));
+         Log_Line (", loc: " & Image (Get_Location (Decl)));
          if Get_Kind (Decl) in Iir_Kinds_Subprogram_Declaration then
-            Put_Line ("   " & Disp_Subprg (Decl));
+            Log_Line ("   " & Disp_Subprg (Decl));
          end if;
       end if;
    end Dump_Interpretation;
 
-   procedure Dump_A_Scope (First, Last : Name_Interpretation_Type)
-   is
-      use Ada.Text_IO;
+   procedure Dump_A_Scope (First, Last : Name_Interpretation_Type) is
    begin
       if First > Last then
-         Put_Line ("scope is empty");
+         Log_Line ("scope is empty");
          return;
       end if;
 
@@ -1595,15 +1633,15 @@ package body Sem_Scopes is
          begin
             Dump_Interpretation (Inter);
             if Cell.Prev_Hidden then
-               Put ("  [prev:");
-               Put (Name_Interpretation_Type'Image (Cell.Prev));
+               Log ("  [prev:");
+               Log (Name_Interpretation_Type'Image (Cell.Prev));
                if Cell.Prev_Hidden then
-                  Put (" hidden");
+                  Log (" hidden");
                end if;
-               Put_Line ("]");
+               Log_Line ("]");
             else
                if Cell.Prev < First then
-                  Put_Line (" [last in scope]");
+                  Log_Line (" [last in scope]");
                end if;
             end if;
          end;
@@ -1615,9 +1653,7 @@ package body Sem_Scopes is
       Dump_A_Scope (Current_Region_Start, Interpretations.Last);
    end Dump_Current_Scope;
 
-   procedure Disp_Scopes
-   is
-      use Ada.Text_IO;
+   procedure Disp_Scopes is
    begin
       for I in reverse Scopes.First .. Scopes.Last loop
          declare
@@ -1625,11 +1661,11 @@ package body Sem_Scopes is
          begin
             case S.Kind is
                when Scope_Start =>
-                  Put ("scope_start at");
+                  Log ("scope_start at");
                when Scope_Region =>
-                  Put ("scope_region at");
+                  Log ("scope_region at");
             end case;
-            Put_Line (Name_Interpretation_Type'Image (S.Saved_Region_Start));
+            Log_Line (Name_Interpretation_Type'Image (S.Saved_Region_Start));
          end;
       end loop;
    end Disp_Scopes;

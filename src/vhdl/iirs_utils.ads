@@ -144,10 +144,6 @@ package Iirs_Utils is
    function Get_Predefined_Function_Name (Func : Iir_Predefined_Functions)
      return String;
 
-   --  Mark SUBPRG as used.  If SUBPRG is an instance, its generic is also
-   --  marked.
-   procedure Mark_Subprogram_Used (Subprg : Iir);
-
    --  Create the range_constraint node for an enumeration type.
    procedure Create_Range_Constraint_For_Enumeration_Type
      (Def : Iir_Enumeration_Type_Definition);
@@ -248,6 +244,14 @@ package Iirs_Utils is
    --  Return the type or subtype definition of the SUBTYP type mark.
    function Get_Denoted_Type_Mark (Subtyp : Iir) return Iir;
 
+   --  From element declaration or element constraint EL, get the corresponding
+   --  element declaration in the base record type.
+   function Get_Base_Element_Declaration (El : Iir) return Iir;
+
+   --  Append EL to the chain of owned elements of REC_TYPE.  Used only when
+   --  a record_element_constraint is built.
+   procedure Append_Owned_Element_Constraint (Rec_Type : Iir; El : Iir);
+
    --  Return true iff L and R have the same profile.
    --  L and R must be subprograms specification (or spec_body).
    function Is_Same_Profile (L, R: Iir) return Boolean;
@@ -338,6 +342,9 @@ package Iirs_Utils is
 
    --  Create an error node for node ORIG, which is supposed to be a type.
    function Create_Error_Type (Orig : Iir) return Iir;
+
+   --  Create an error node for a name.
+   function Create_Error_Name (Orig : Iir) return Iir;
 
    --  Extract the entity from ASPECT.
    --  Note: if ASPECT is a component declaration, returns ASPECT.

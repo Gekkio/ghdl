@@ -166,10 +166,16 @@ package Evaluation is
    function Eval_Value_Attribute
      (Value : String; Atype : Iir; Orig : Iir) return Iir;
 
-   --  Store into NAME_BUFFER, NAME_LENGTH the simple name, character literal
-   --  or operator sumbol of ID, using the same format as SIMPLE_NAME
-   --  attribute.
-   procedure Eval_Simple_Name (Id : Name_Id);
+   --  From one-dimensional array expression PREFIX extract element at
+   --  offset OFF (from 0 to length - 1).  Note that the element is directly
+   --  returned, not a copy of it (so it should be referenced if stored in
+   --  the tree).
+   function Eval_Indexed_Name_By_Offset (Prefix : Iir; Off : Iir_Index32)
+                                        return Iir;
+
+   --  Return the simple name, character literal or operator sumbol of ID,
+   --  using the same format as SIMPLE_NAME attribute.
+   function Eval_Simple_Name (Id : Name_Id) return String;
 
    --  Compare two string literals (of same length).
    type Compare_Type is (Compare_Lt, Compare_Eq, Compare_Gt);

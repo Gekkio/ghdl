@@ -22,6 +22,7 @@ with Version;
 with Bug;
 with Options;
 with Types; use Types;
+with Errorout.Console;
 
 package body Ghdlmain is
    procedure Init (Cmd : in out Command_Type)
@@ -88,7 +89,7 @@ package body Ghdlmain is
                             Res : out Option_Res);
 
    function Get_Short_Help (Cmd : Command_Help) return String;
-   procedure Perform_Action (Cmd : in out Command_Help; Args : Argument_List);
+   procedure Perform_Action (Cmd : Command_Help; Args : Argument_List);
 
    function Decode_Command (Cmd : Command_Help; Name : String) return Boolean
    is
@@ -116,7 +117,7 @@ package body Ghdlmain is
       return "-h or --help [CMD] Disp this help or [help on CMD]";
    end Get_Short_Help;
 
-   procedure Perform_Action (Cmd : in out Command_Help; Args : Argument_List)
+   procedure Perform_Action (Cmd : Command_Help; Args : Argument_List)
    is
       pragma Unreferenced (Cmd);
 
@@ -144,7 +145,7 @@ package body Ghdlmain is
          Put_Line ("Also see --options-help for analyzer options.");
          New_Line;
          Put_Line ("Please, refer to the GHDL manual for more information.");
-         Put_Line ("Report issues on https://github.com/tgingold/ghdl");
+         Put_Line ("Report issues on https://github.com/ghdl/ghdl");
       elsif Args'Length = 1 then
          C := Find_Command (Args (1).all);
          if C = null then
@@ -164,7 +165,7 @@ package body Ghdlmain is
    function Decode_Command (Cmd : Command_Option_Help; Name : String)
                            return Boolean;
    function Get_Short_Help (Cmd : Command_Option_Help) return String;
-   procedure Perform_Action (Cmd : in out Command_Option_Help;
+   procedure Perform_Action (Cmd : Command_Option_Help;
                              Args : Argument_List);
 
    function Decode_Command (Cmd : Command_Option_Help; Name : String)
@@ -182,7 +183,7 @@ package body Ghdlmain is
       return "--options-help     Disp help for analyzer options";
    end Get_Short_Help;
 
-   procedure Perform_Action (Cmd : in out Command_Option_Help;
+   procedure Perform_Action (Cmd : Command_Option_Help;
                              Args : Argument_List)
    is
       pragma Unreferenced (Cmd);
@@ -199,7 +200,7 @@ package body Ghdlmain is
    function Decode_Command (Cmd : Command_Version; Name : String)
                            return Boolean;
    function Get_Short_Help (Cmd : Command_Version) return String;
-   procedure Perform_Action (Cmd : in out Command_Version;
+   procedure Perform_Action (Cmd : Command_Version;
                              Args : Argument_List);
 
    function Decode_Command (Cmd : Command_Version; Name : String)
@@ -217,7 +218,7 @@ package body Ghdlmain is
       return "-v or --version    Disp ghdl version";
    end Get_Short_Help;
 
-   procedure Perform_Action (Cmd : in out Command_Version;
+   procedure Perform_Action (Cmd : Command_Version;
                              Args : Argument_List)
    is
       pragma Unreferenced (Cmd);
@@ -236,7 +237,7 @@ package body Ghdlmain is
       Put_Line ("Written by Tristan Gingold.");
       New_Line;
       --  Display copyright.  Assume 80 cols terminal.
-      Put_Line ("Copyright (C) 2003 - 2015 Tristan Gingold.");
+      Put_Line ("Copyright (C) 2003 - 2019 Tristan Gingold.");
       Put_Line ("GHDL is free software, covered by the "
                 & "GNU General Public License.  There is NO");
       Put_Line ("warranty; not even for MERCHANTABILITY or"
@@ -271,7 +272,8 @@ package body Ghdlmain is
       First_Arg : Natural;
    begin
       --  Set program name for error message.
-      Errorout.Set_Program_Name (Command_Name);
+      Errorout.Console.Set_Program_Name (Command_Name);
+      Errorout.Console.Install_Handler;
 
       --  Handle case of no argument
       if Argument_Count = 0 then
@@ -353,6 +355,8 @@ package body Ghdlmain is
                   when Option_Bad =>
                      Error ("unknown option '" & Arg.all & "' for command '"
                             & Cmd_Name.all & "'");
+                     raise Option_Error;
+                  when Option_Err =>
                      raise Option_Error;
                   when Option_Ok =>
                      Arg_Index := Arg_Index + 1;

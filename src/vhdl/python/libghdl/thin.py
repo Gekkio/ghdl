@@ -1,5 +1,5 @@
 from libghdl import libghdl
-from ctypes import (c_char_p, c_int32, c_int, c_bool, sizeof, c_void_p,
+from ctypes import (c_char_p, c_int32, c_int, c_int8, c_bool, sizeof, c_void_p,
                     POINTER, Structure)
 import libghdl.iirs as iirs
 import libghdl.nodes_meta as nodes_meta
@@ -25,9 +25,21 @@ def analyze_init():
 def analyze_file(filename):
     return _analyze_file(c_char_p(filename), len(filename))
 
+EOT = b'\x04'
+
+No_Source_File_Entry = 0
+
+No_Location = 0
+
+Null_Iir = 0
+Null_Iir_List = 0
+Iir_List_All = 1
+
+Null_Iir_Flist = 0
+Iir_Flist_Others = 1
+Iir_Flist_All = 2
 
 # Lists
-
 
 class Lists:
     List_Type = c_int32
@@ -74,27 +86,46 @@ class Flists:
 
 
 # Files
+class Files_Map:
+    Location_To_File = libghdl.files_map__location_to_file
 
-Location_To_File = libghdl.files_map__location_to_file
+    Location_File_To_Pos = libghdl.files_map__location_file_to_pos
 
-Location_File_To_Pos = libghdl.files_map__location_file_to_pos
+    Location_File_To_Line = libghdl.files_map__location_file_to_line
 
-Location_File_To_Line = libghdl.files_map__location_file_to_line
+    Location_File_Line_To_Offset = \
+        libghdl.files_map__location_file_line_to_offset
 
-Location_File_Line_To_Col = libghdl.files_map__location_file_line_to_col
+    Location_File_Line_To_Col = libghdl.files_map__location_file_line_to_col
 
-Get_File_Name = libghdl.files_map__get_file_name
+    File_To_Location = libghdl.files_map__file_to_location
 
-Get_File_Buffer = libghdl.files_map__get_file_buffer
-Get_File_Buffer.restype = c_void_p
+    File_Pos_To_Location = libghdl.files_map__file_pos_to_location
 
-Get_File_Length = libghdl.files_map__get_file_length
+    File_Line_To_Position = libghdl.files_map__file_line_to_position
 
-Read_Source_File = libghdl.files_map__read_source_file
+    Get_File_Name = libghdl.files_map__get_file_name
 
-No_Source_File_Entry = 0
+    Get_Directory_Name = libghdl.files_map__get_directory_name
 
-No_Location = 0
+    Get_File_Buffer = libghdl.files_map__get_file_buffer
+    Get_File_Buffer.restype = c_void_p
+
+    Get_File_Length = libghdl.files_map__get_file_length
+    Set_File_Length = libghdl.files_map__set_file_length
+
+    Read_Source_File = libghdl.files_map__read_source_file
+
+    Reserve_Source_File = libghdl.files_map__reserve_source_file
+
+    Get_Last_Source_File_Entry = libghdl.files_map__get_last_source_file_entry
+
+
+class Files_Map_Editor:
+    Set_Gap = libghdl.files_map__editor__set_gap
+    Replace_Text = libghdl.files_map__editor__replace_text_ptr
+
+    Check_Buffer_Content = libghdl.files_map__editor__check_buffer_content
 
 # Names
 
@@ -108,6 +139,7 @@ _Get_Identifier_With_Len = libghdl.name_table__get_identifier_with_len
 def Get_Identifier(s):
     return _Get_Identifier_With_Len(c_char_p(s), len(s))
 
+Null_Identifier = 0
 
 # Ieee
 
@@ -134,6 +166,11 @@ class Ieee:
 class Flags:
     Flag_Elocations = c_bool.in_dll(libghdl, "flags__flag_elocations")
 
+    Verbose = c_bool.in_dll(libghdl, "flags__verbose")
+
+    Flag_Elaborate_With_Outdated = c_bool.in_dll(
+        libghdl, "flags__flag_elaborate_with_outdated")
+
 
 # Scanner
 class Scanner:
@@ -150,7 +187,7 @@ class Scanner:
 
     Get_Current_Line = libghdl.scanner__get_current_line
 
-    Get_Token_Column = libghdl.scanner__get_token_column
+    Get_Token_Offset = libghdl.scanner__get_token_offset
 
     Get_Token_Position = libghdl.scanner__get_token_position
 
@@ -180,30 +217,39 @@ class Canon:
         libghdl.canon__canon_extract_sequential_statement_chain_sensitivity
 
 
-# std.standard
+class Sem_Lib:
+    Load_File = libghdl.sem_lib__load_file
 
-# Use .value
-Standard_Package = c_int32.in_dll(libghdl, "std_package__standard_package")
 
-# Use .value
-Character_Type_Definition = c_int32.in_dll(
-    libghdl, "std_package__character_type_definition")
+class Std_Package:
+    # Use .value
+    Std_Location = c_int32.in_dll(libghdl, "std_package__std_location")
 
-# libraries
+    # Use .value
+    Standard_Package = c_int32.in_dll(libghdl, "std_package__standard_package")
 
-Get_Libraries_Chain = libghdl.libraries__get_libraries_chain
+    # Use .value
+    Character_Type_Definition = c_int32.in_dll(
+        libghdl, "std_package__character_type_definition")
 
-Add_Design_Unit_Into_Library = libghdl.libraries__add_design_unit_into_library
+class Libraries:
+    Get_Libraries_Chain = libghdl.libraries__get_libraries_chain
 
-Finish_Compilation = libghdl.libraries__finish_compilation
+    Add_Design_Unit_Into_Library = \
+        libghdl.libraries__add_design_unit_into_library
 
-# Use .value
-Library_Location = c_int32.in_dll(libghdl, "libraries__library_location")
+    Finish_Compilation = libghdl.sem_lib__finish_compilation
 
-# Use .value
-Work_Library = c_int32.in_dll(libghdl, "libraries__work_library")
+    # Use .value
+    Library_Location = c_int32.in_dll(libghdl, "libraries__library_location")
 
-Purge_Design_File = libghdl.libraries__purge_design_file
+    # Use .value
+    Work_Library = c_int32.in_dll(libghdl, "libraries__work_library")
+
+    Purge_Design_File = libghdl.libraries__purge_design_file
+
+    Find_Entity_For_Component = libghdl.libraries__find_entity_for_component
+
 
 # Disp_Tree
 
@@ -225,10 +271,30 @@ class Iirs_Utils:
     Get_Interface_Of_Formal = \
         libghdl.iirs_utils__get_interface_of_formal
 
-Null_Iir = 0
-Null_Iir_List = 0
-Iir_List_All = 1
+# Errorout
 
-Null_Iir_Flist = 0
-Iir_Flist_Others = 1
-Iir_Flist_All = 2
+class Errorout:
+    class Error_Record(Structure):
+        _fields_ = [("origin", c_int8),
+                    ("id", c_int8),
+                    ("cont", c_int8),
+                    ("file", c_int32),
+                    ("line", c_int32),
+                    ("offset", c_int32),
+                    ("length", c_int32)]
+
+
+class Errorout_Memory:
+    Install_Handler = libghdl.errorout__memory__install_handler
+
+    Get_Nbr_Messages = libghdl.errorout__memory__get_nbr_messages
+
+    Get_Error_Record = libghdl.errorout__memory__get_error_record
+    Get_Error_Record.argstypes = [c_int32]
+    Get_Error_Record.restype = Errorout.Error_Record
+
+    Get_Error_Message = libghdl.errorout__memory__get_error_message_addr
+    Get_Error_Message.argstype = [c_int32]
+    Get_Error_Message.restype = c_char_p
+
+    Clear_Errors = libghdl.errorout__memory__clear_errors

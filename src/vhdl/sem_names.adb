@@ -17,7 +17,6 @@
 --  02111-1307, USA.
 with Evaluation; use Evaluation;
 with Iirs_Utils; use Iirs_Utils;
-with Libraries;
 with Errorout; use Errorout;
 with Flags; use Flags;
 with Name_Table;
@@ -26,6 +25,7 @@ with Types; use Types;
 with Iir_Chains; use Iir_Chains;
 with Std_Names;
 with Sem;
+with Sem_Lib; use Sem_Lib;
 with Sem_Scopes; use Sem_Scopes;
 with Sem_Expr; use Sem_Expr;
 with Sem_Stmts; use Sem_Stmts;
@@ -405,13 +405,17 @@ package body Sem_Names is
             declare
                Header : constant Iir := Get_Package_Header (Decl);
             begin
-               if Is_Valid (Header) then
+               if Is_Valid (Header)
+                 and then Get_Is_Within_Flag (Decl)
+               then
                   Iterator_Decl_Chain (Get_Generic_Chain (Header), Id);
                end if;
             end;
          when Iir_Kind_Package_Instantiation_Declaration
            | Iir_Kind_Interface_Package_Declaration =>
-            Iterator_Decl_Chain (Get_Generic_Chain (Decl), Id);
+            --  Generics are not visible in selected name.
+            null;
+            --  Iterator_Decl_Chain (Get_Generic_Chain (Decl), Id);
          when Iir_Kind_Block_Statement =>
             declare
                Header : constant Iir := Get_Block_Header (Decl);
@@ -888,9 +892,20 @@ package body Sem_Names is
       --  The name must not have been analyzed.
       pragma Assert (Get_Type (Name) = Null_Iir);
 
+      if Is_Error (Name) then
+         Set_Type (Name, Name);
+         return Name;
+      end if;
+
       --  Analyze the name (if not already done).
-      if Get_Named_Entity (Name) = Null_Iir then
+      Res := Get_Named_Entity (Name);
+      if Res = Null_Iir then
          Sem_Name (Name);
+         Res := Get_Named_Entity (Name);
+      end if;
+      if Res /= Null_Iir and then Is_Overload_List (Res) then
+         Error_Msg_Sem (+Name, "name does not denote a type mark");
+         return Create_Error_Type (Name);
       end if;
       Res := Finish_Sem_Name (Name);
 
@@ -1302,13 +1317,14 @@ package body Sem_Names is
          return Conv;
       end if;
 
-      -- LRM93 7.3.5
-      -- Furthermore, the operand of a type conversion is not allowed to be
-      -- the literal null, an allocator, an aggregate, or a string literal.
+      --  LRM93 7.3.5
+      --  Furthermore, the operand of a type conversion is not allowed to be
+      --  the literal null, an allocator, an aggregate, or a string literal.
       case Get_Kind (Actual) is
          when Iir_Kind_Null_Literal
            | Iir_Kind_Aggregate
-           | Iir_Kind_String_Literal8 =>
+           | Iir_Kind_String_Literal8
+           | Iir_Kinds_Allocator =>
             Error_Msg_Sem
               (+Actual, "%n cannot be a type conversion operand", +Actual);
             return Conv;
@@ -1317,61 +1333,58 @@ package body Sem_Names is
             Error_Msg_Sem
               (+Actual, "subtype indication not allowed in an expression");
             return Conv;
+         when Iir_Kind_Error =>
+            return Conv;
          when others =>
-            -- LRM93 7.3.5
-            -- The type of the operand of a type conversion must be
-            -- determinable independent of the context (in particular,
-            -- independent of the target type).
-            Expr := Sem_Expression_Universal (Actual);
-            if Expr = Null_Iir then
-               return Conv;
-            end if;
-            if Get_Kind (Expr) in Iir_Kinds_Allocator then
-               Error_Msg_Sem
-                 (+Expr, "%n cannot be a type conversion operand", +Expr);
-            end if;
-            Set_Expression (Conv, Expr);
+            null;
       end case;
+
+      --  LRM93 7.3.5
+      --  The type of the operand of a type conversion must be
+      --  determinable independent of the context (in particular,
+      --  independent of the target type).
+      Expr := Sem_Expression_Universal (Actual);
+      if Expr = Null_Iir then
+         return Conv;
+      end if;
+      Set_Expression (Conv, Expr);
 
       --  LRM93 7.4.1 Locally Static Primaries.
       --  9. a type conversion whose expression is a locally static expression.
       --  LRM93 7.4.2 Globally Static Primaries.
       --  14. a type conversion whose expression is a globally static
       --      expression.
-      if Expr /= Null_Iir then
-         Staticness := Get_Expr_Staticness (Expr);
+      Staticness := Get_Expr_Staticness (Expr);
 
-         --  If the type mark is not locally static, the expression cannot
-         --  be locally static.  This was clarified in VHDL 08, but a type
-         --  mark that denotes an unconstrained array type, does not prevent
-         --  the expression from being static.
-         if Get_Kind (Conv_Type) not in Iir_Kinds_Array_Type_Definition
-           or else Get_Constraint_State (Conv_Type) = Fully_Constrained
-         then
-            Staticness := Min (Staticness, Get_Type_Staticness (Conv_Type));
-         end if;
+      --  If the type mark is not locally static, the expression cannot
+      --  be locally static.  This was clarified in VHDL 08, but a type
+      --  mark that denotes an unconstrained array type, does not prevent
+      --  the expression from being static.
+      if Get_Kind (Conv_Type) not in Iir_Kinds_Array_Type_Definition
+        or else Get_Constraint_State (Conv_Type) = Fully_Constrained
+      then
+         Staticness := Min (Staticness, Get_Type_Staticness (Conv_Type));
+      end if;
 
-         --  LRM87 7.4 Static Expressions
-         --  A type conversion is not a locally static expression.
-         if Flags.Vhdl_Std = Vhdl_87 then
-            Staticness := Min (Globally, Staticness);
-         end if;
-         Set_Expr_Staticness (Conv, Staticness);
+      --  LRM87 7.4 Static Expressions
+      --  A type conversion is not a locally static expression.
+      if Flags.Vhdl_Std = Vhdl_87 then
+         Staticness := Min (Globally, Staticness);
+      end if;
+      Set_Expr_Staticness (Conv, Staticness);
 
-         if not Are_Types_Closely_Related (Conv_Type, Get_Type (Expr))
-         then
-            --  FIXME: should explain why the types are not closely related.
-            Error_Msg_Sem
-              (+Conv,
-               "conversion not allowed between not closely related types");
-            --  Avoid error storm in evaluation.
-            Set_Expr_Staticness (Conv, None);
-         else
-            --  Unless the type conversion appears in the formal part of an
-            --  association, the expression must be readable.
-            if not In_Formal then
-               Check_Read (Expr);
-            end if;
+      if not Are_Types_Closely_Related (Conv_Type, Get_Type (Expr)) then
+         --  FIXME: should explain why the types are not closely related.
+         Error_Msg_Sem
+           (+Conv,
+            "conversion not allowed between not closely related types");
+         --  Avoid error storm in evaluation.
+         Set_Expr_Staticness (Conv, None);
+      else
+         --  Unless the type conversion appears in the formal part of an
+         --  association, the expression must be readable.
+         if not In_Formal then
+            Check_Read (Expr);
          end if;
       end if;
       return Conv;
@@ -1736,6 +1749,9 @@ package body Sem_Names is
            | Iir_Kind_Instance_Name_Attribute =>
             Free_Iir (Name);
             return Res;
+         when Iir_Kinds_External_Name =>
+            pragma Assert (Name = Res);
+            return Res;
          when Iir_Kind_Psl_Expression =>
             return Res;
          when Iir_Kind_Psl_Declaration =>
@@ -1764,7 +1780,7 @@ package body Sem_Names is
             Free_Parenthesis_Name (Name, Res);
          when Iir_Kind_Selected_Element =>
             pragma Assert (Get_Kind (Name) = Iir_Kind_Selected_Name);
-            Xref_Ref (Res, Get_Selected_Element (Res));
+            Xref_Ref (Res, Get_Named_Entity (Res));
             Set_Name_Staticness (Res, Get_Name_Staticness (Prefix));
             Set_Expr_Staticness (Res, Get_Expr_Staticness (Prefix));
             Set_Base_Name (Res, Get_Base_Name (Prefix));
@@ -1821,7 +1837,15 @@ package body Sem_Names is
       if not Valid_Interpretation (Interpretation) then
          --  Unknown name.
          if not Soft then
-            Error_Msg_Sem (+Name, "no declaration for %i", +Name);
+            Interpretation := Get_Interpretation_Raw (Id);
+            if Valid_Interpretation (Interpretation)
+              and then Is_Conflict_Declaration (Interpretation)
+            then
+               Error_Msg_Sem
+                 (+Name, "no declaration for %i (due to conflicts)", +Name);
+            else
+               Error_Msg_Sem (+Name, "no declaration for %i", +Name);
+            end if;
          end if;
          Res := Error_Mark;
       elsif not Valid_Interpretation (Get_Next_Interpretation (Interpretation))
@@ -1832,7 +1856,7 @@ package body Sem_Names is
          --  For a design unit, return the library unit
          if Get_Kind (Res) = Iir_Kind_Design_Unit then
             --  FIXME: should replace interpretation ?
-            Libraries.Load_Design_Unit (Res, Name);
+            Load_Design_Unit (Res, Name);
             Sem.Add_Dependence (Res);
             Res := Get_Library_Unit (Res);
          end if;
@@ -1974,7 +1998,7 @@ package body Sem_Names is
          Set_Prefix (Se, R);
          Set_Type (Se, Get_Type (Rec_El));
          Set_Identifier (Se, Suffix);
-         Set_Selected_Element (Se, Rec_El);
+         Set_Named_Entity (Se, Rec_El);
          Set_Base_Name (Se, Get_Object_Prefix (R, False));
          Add_Result (Res, Se);
       end Sem_As_Selected_Element;
@@ -2061,7 +2085,7 @@ package body Sem_Names is
          Sem_Name (Prefix_Name);
       end if;
       Prefix := Get_Named_Entity (Prefix_Name);
-      if Prefix = Error_Mark then
+      if Is_Error (Prefix) then
          Set_Named_Entity (Name, Prefix);
          return;
       end if;
@@ -2133,7 +2157,7 @@ package body Sem_Names is
             --  An expanded name is not allowed for a secondary unit,
             --  particularly for an architecture body.
             --  GHDL: FIXME: error message more explicit
-            Res := Libraries.Load_Primary_Unit (Prefix, Suffix, Name);
+            Res := Load_Primary_Unit (Prefix, Suffix, Name);
             if Res /= Null_Iir then
                Sem.Add_Dependence (Res);
                Res := Get_Library_Unit (Res);
@@ -2161,7 +2185,7 @@ package body Sem_Names is
             --  literal, or operator symbol of an named entity whose
             --  declaration occurs immediatly within that construct.
             if Get_Kind (Prefix) = Iir_Kind_Design_Unit then
-               Libraries.Load_Design_Unit (Prefix, Name);
+               Load_Design_Unit (Prefix, Name);
                Sem.Add_Dependence (Prefix);
                Prefix := Get_Library_Unit (Prefix);
                --  Modified only for xrefs, since a design_unit points to
@@ -2178,7 +2202,7 @@ package body Sem_Names is
                     (+Name, "no declaration for %i in %n", (+Suffix, +Prefix));
                end if;
             else
-               --  LRM93 §6.3
+               --  LRM93 6.3
                --  This form of expanded name is only allowed within the
                --  construct itself.
                --  FIXME: LRM08 12.3 Visibility h)
@@ -2186,12 +2210,28 @@ package body Sem_Names is
                                Iir_Kind_Package_Declaration,
                                Iir_Kind_Package_Instantiation_Declaration)
                  and then not Get_Is_Within_Flag (Prefix)
-                 and then not Soft
                then
-                  Error_Msg_Sem
-                    (+Prefix_Loc,
-                     "an expanded name is only allowed within the construct");
+                  if not Soft then
+                     Error_Msg_Sem
+                       (+Prefix_Loc,
+                        "an expanded name is only allowed "
+                          & "within the construct");
+                  end if;
                   --  Hum, keep res.
+               elsif Get_Kind (Prefix) = Iir_Kind_Package_Declaration
+                 and then not Get_Is_Within_Flag (Prefix)
+                 and then Is_Uninstantiated_Package (Prefix)
+               then
+                  --  LRM08 12.3 f) Visibility
+                  --  For a declaration given in a package declaration, other
+                  --  than in a package declaration that defines an
+                  --  uninstantiated package: [...]
+                  if not Soft then
+                     Error_Msg_Sem
+                       (+Prefix_Loc,
+                        "cannot refer a declaration in an "
+                          & "uninstantiated package");
+                  end if;
                end if;
             end if;
          when Iir_Kind_Function_Declaration =>
@@ -2227,7 +2267,9 @@ package body Sem_Names is
            | Iir_Kind_Concurrent_Procedure_Call_Statement
            | Iir_Kind_Component_Instantiation_Statement
            | Iir_Kind_Slice_Name
-           | Iir_Kind_Procedure_Call_Statement =>
+           | Iir_Kind_Procedure_Call_Statement
+           | Iir_Kind_Attribute_Declaration
+           | Iir_Kind_Type_Conversion =>
             if not Soft then
                Error_Msg_Sem
                  (+Prefix_Loc, "%n cannot be selected by name", +Prefix);
@@ -2416,7 +2458,7 @@ package body Sem_Names is
          end if;
 
          if Get_Kind (Base_Type) /= Iir_Kind_Array_Type_Definition then
-            if Finish then
+            if Finish and then not Is_Error (Base_Type) then
                Error_Msg_Sem (+Name, "type of prefix is not an array");
             end if;
             return Null_Iir;
@@ -2569,8 +2611,8 @@ package body Sem_Names is
       Assoc_Chain := Get_Association_Chain (Name);
       Actual := Get_One_Actual (Assoc_Chain);
 
-      if Kind_In (Prefix, Iir_Kind_Type_Declaration,
-                  Iir_Kind_Subtype_Declaration)
+      if Kind_In (Prefix,
+                  Iir_Kind_Type_Declaration, Iir_Kind_Subtype_Declaration)
       then
          --  A type conversion.  The prefix is a type mark.
          declare
@@ -2734,7 +2776,8 @@ package body Sem_Names is
            | Iir_Kind_Component_Declaration
            | Iir_Kind_Type_Conversion
            | Iir_Kind_Unit_Declaration
-           | Iir_Kind_Enumeration_Literal =>
+           | Iir_Kind_Enumeration_Literal
+           | Iir_Kind_Attribute_Declaration =>
             Error_Msg_Sem (+Name, "%n cannot be indexed or sliced", +Prefix);
             Res := Null_Iir;
 
@@ -2899,6 +2942,9 @@ package body Sem_Names is
          when Iir_Kind_Attribute_Declaration =>
             Error_Msg_Sem (+Attr, "prefix of user defined attribute cannot be "
                              & "an attribute");
+            return Error_Mark;
+         when Iir_Kind_Function_Call =>
+            Error_Msg_Sem (+Attr, "invalid prefix or user defined attribute");
             return Error_Mark;
          when Iir_Kinds_Object_Declaration
            | Iir_Kind_Type_Declaration
@@ -3578,15 +3624,19 @@ package body Sem_Names is
 
       case Get_Identifier (Attr) is
          when Name_Simple_Name =>
-            Res := Create_Iir (Iir_Kind_Simple_Name_Attribute);
-            Eval_Simple_Name (Get_Identifier (Prefix));
-            Set_Simple_Name_Identifier (Res, Name_Table.Get_Identifier);
-            Attr_Type := Create_Unidim_Array_By_Length
-              (String_Type_Definition,
-               Iir_Int64 (Name_Table.Nam_Length),
-               Attr);
-            Set_Simple_Name_Subtype (Res, Attr_Type);
-            Set_Expr_Staticness (Res, Locally);
+            declare
+               Id : constant Name_Id := Name_Table.Get_Identifier
+                 (Eval_Simple_Name (Get_Identifier (Prefix)));
+            begin
+               Res := Create_Iir (Iir_Kind_Simple_Name_Attribute);
+               Set_Simple_Name_Identifier (Res, Id);
+               Attr_Type := Create_Unidim_Array_By_Length
+                 (String_Type_Definition,
+                  Iir_Int64 (Name_Table.Get_Name_Length (Id)),
+                  Attr);
+               Set_Simple_Name_Subtype (Res, Attr_Type);
+               Set_Expr_Staticness (Res, Locally);
+            end;
 
          when Name_Path_Name =>
             Res := Create_Iir (Iir_Kind_Path_Name_Attribute);
@@ -3772,6 +3822,8 @@ package body Sem_Names is
             Sem_Selected_By_All_Name (Name);
          when Iir_Kind_Attribute_Name =>
             Sem_Attribute_Name (Name);
+         when Iir_Kinds_External_Name =>
+            Sem_External_Name (Name);
          when others =>
             Error_Kind ("sem_name", Name);
       end case;
@@ -4157,17 +4209,6 @@ package body Sem_Names is
       end case;
    end Name_To_Type_Definition;
 
-   function Create_Error_Name (Orig : Iir) return Iir
-   is
-      Res : Iir;
-   begin
-      Res := Create_Iir (Iir_Kind_Error);
-      Set_Expr_Staticness (Res, None);
-      Set_Error_Origin (Res, Orig);
-      Location_Copy (Res, Orig);
-      return Res;
-   end Create_Error_Name;
-
    function Sem_Denoting_Name (Name: Iir) return Iir
    is
       Res: Iir;
@@ -4231,6 +4272,17 @@ package body Sem_Names is
       end if;
 
       Set_Type (Name, Atype);
+
+      --  LRM08 8.1 Names
+      --  A name is said to be a static name if and only if one of the
+      --  following condition holds:
+      --  - The name is an external name.
+      Set_Name_Staticness (Name, Globally);
+
+      Set_Expr_Staticness (Name, None);
+
+      --  Consider the node as analyzed.
+      Set_Named_Entity (Name, Name);
    end Sem_External_Name;
 
    function Sem_Terminal_Name (Name : Iir) return Iir

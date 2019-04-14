@@ -145,9 +145,8 @@ package body Canon is
                   Add_Element (Sensitivity_List, Expr);
                end if;
             else
-               Canon_Extract_Sensitivity (Get_Prefix (Expr),
-                                          Sensitivity_List,
-                                          Is_Target);
+               Canon_Extract_Sensitivity
+                 (Get_Prefix (Expr), Sensitivity_List, Is_Target);
             end if;
 
          when Iir_Kind_Indexed_Name =>
@@ -158,9 +157,8 @@ package body Canon is
                   Add_Element (Sensitivity_List, Expr);
                end if;
             else
-               Canon_Extract_Sensitivity (Get_Prefix (Expr),
-                                          Sensitivity_List,
-                                          Is_Target);
+               Canon_Extract_Sensitivity
+                 (Get_Prefix (Expr), Sensitivity_List, Is_Target);
                declare
                   Flist : constant Iir_Flist := Get_Index_List (Expr);
                   El : Iir;
@@ -197,6 +195,15 @@ package body Canon is
          when Iir_Kind_Allocator_By_Subtype =>
             null;
 
+         when Iir_Kind_Dereference
+           | Iir_Kind_Implicit_Dereference =>
+            Canon_Extract_Sensitivity
+              (Get_Prefix (Expr), Sensitivity_List, False);
+
+         when Iir_Kind_External_Variable_Name
+           | Iir_Kind_External_Constant_Name =>
+            null;
+
          when Iir_Kinds_Monadic_Operator =>
             Canon_Extract_Sensitivity
               (Get_Operand (Expr), Sensitivity_List, False);
@@ -224,7 +231,8 @@ package body Canon is
          when Iir_Kind_Interface_Signal_Declaration
            | Iir_Kind_Signal_Declaration
            | Iir_Kind_Guard_Signal_Declaration
-           | Iir_Kinds_Signal_Attribute =>
+           | Iir_Kinds_Signal_Attribute
+           | Iir_Kind_External_Signal_Name =>
             --  LRM 8.1
             --  A simple name that denotes a signal, add the longuest static
             --  prefix of the name to the sensitivity set;
@@ -250,8 +258,9 @@ package body Canon is
             end;
 
          when Iir_Kind_Object_Alias_Declaration =>
-            Canon_Extract_Sensitivity
-              (Get_Name (Expr), Sensitivity_List, Is_Target);
+            if not Is_Target and then Is_Signal_Object (Expr) then
+               Add_Element (Sensitivity_List, Expr);
+            end if;
 
          when Iir_Kind_Constant_Declaration
            | Iir_Kind_Interface_Constant_Declaration
@@ -504,6 +513,7 @@ package body Canon is
      (Callees_List : Iir_List; Sensitivity_List : Iir_List)
    is
       Callee : Iir;
+      Orig_Callee : Iir;
       It : List_Iterator;
       Bod : Iir;
    begin
@@ -520,6 +530,15 @@ package body Canon is
       It := List_Iterate (Callees_List);
       while Is_Valid (It) loop
          Callee := Get_Element (It);
+
+         --  For subprograms of instantiated packages, refer to the
+         --  uninstantiated subprogram.
+         --  FIXME: not for macro-expanded packages
+         Orig_Callee := Sem_Inst.Get_Origin (Callee);
+         if Orig_Callee /= Null_Iir then
+            Callee := Orig_Callee;
+         end if;
+
          if not Get_Seen_Flag (Callee) then
             Set_Seen_Flag (Callee, True);
             case Get_All_Sensitized_State (Callee) is
@@ -538,8 +557,25 @@ package body Canon is
                when No_Signal =>
                   null;
 
-               when Unknown | Invalid_Signal =>
+               when Invalid_Signal =>
+                  --  Cannot be here.  The error must have been detected.
                   raise Internal_Error;
+
+               when Unknown =>
+                  --  Must be a subprogram declared in a different design unit.
+                  --  Only a package can apply to this case.
+                  --  Will be checked at elaboration.
+                  pragma Assert (not Flags.Flag_Elaborate);
+                  declare
+                     Parent : Iir;
+                  begin
+                     Parent := Get_Parent (Callee);
+                     pragma Assert
+                       (Get_Kind (Parent) = Iir_Kind_Package_Declaration);
+                     Parent := Get_Parent (Parent);
+                     pragma Assert
+                       (Get_Kind (Parent) = Iir_Kind_Design_Unit);
+                  end;
             end case;
          end if;
          Next (It);
@@ -547,8 +583,7 @@ package body Canon is
    end Canon_Extract_Sensitivity_From_Callees;
 
    function Canon_Extract_Process_Sensitivity
-     (Proc : Iir_Sensitized_Process_Statement)
-     return Iir_List
+     (Proc : Iir_Sensitized_Process_Statement) return Iir_List
    is
       Res : Iir_List;
    begin
@@ -784,7 +819,8 @@ package body Canon is
            | Iir_Kind_Interface_Variable_Declaration
            | Iir_Kind_File_Declaration
            | Iir_Kind_Interface_File_Declaration
-           | Iir_Kind_Object_Alias_Declaration =>
+           | Iir_Kind_Object_Alias_Declaration
+           | Iir_Kind_Psl_Endpoint_Declaration =>
             null;
 
          when Iir_Kind_Enumeration_Literal
@@ -1717,7 +1753,6 @@ package body Canon is
    --  Size the NFA and extract clock sensitivity.
    procedure Canon_Psl_Clocked_NFA (Stmt : Iir)
    is
-      use PSL.Nodes;
       Fa : constant PSL_NFA := Get_PSL_NFA (Stmt);
       Num : Natural;
       List : Iir_List;
@@ -2078,7 +2113,6 @@ package body Canon is
 
             when Iir_Kind_Psl_Assert_Statement =>
                declare
-                  use PSL.Nodes;
                   Prop : PSL_Node;
                   Fa : PSL_NFA;
                begin
@@ -2095,7 +2129,6 @@ package body Canon is
 
             when Iir_Kind_Psl_Cover_Statement =>
                declare
-                  use PSL.Nodes;
                   Seq : PSL_Node;
                   Fa : PSL_NFA;
                begin
@@ -2702,7 +2735,7 @@ package body Canon is
       then
          Bod := Sem_Inst.Instantiate_Package_Body (Decl);
          Set_Parent (Bod, Get_Parent (Decl));
-         Set_Package_Body (Decl, Bod);
+         Set_Instance_Package_Body (Decl, Bod);
       end if;
 
       return Decl;

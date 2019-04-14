@@ -16,8 +16,7 @@
 --  Software Foundation, 59 Temple Place - Suite 330, Boston, MA
 --  02111-1307, USA.
 
-with Ada.Text_IO;
-with GNAT.OS_Lib;
+with Logging; use Logging;
 with Scanner;
 with Name_Table;
 with Iirs_Utils; use Iirs_Utils;
@@ -26,78 +25,53 @@ with Ada.Strings.Unbounded;
 with Std_Names;
 with Flags; use Flags;
 with PSL.Nodes;
+with Str_Table;
 
 package body Errorout is
-   --  Name of the program, used to report error message.
-   Program_Name : String_Acc := null;
-
-   --  Terminal.
-
-   --  Set Flag_Color_Diagnostics to On or Off if is was Auto.
-   procedure Detect_Terminal
-   is
-      --  Import isatty.
-      function isatty (Fd : Integer) return Integer;
-      pragma Import (C, isatty);
-
-      --  Awful way to detect if the host is Windows.  Should be replaced by
-      --  a host-specific package.
-      Is_Windows : constant Boolean := GNAT.OS_Lib.Directory_Separator = '\';
+   procedure Error_Kind (Msg : String; An_Iir : Iir) is
    begin
-      if Flag_Color_Diagnostics = Auto then
-         if Is_Windows then
-            --  Off by default on Windows, as the consoles may not support
-            --  ANSI control sequences.  Should be replaced by calls to the
-            --  Win32 API.
-            Flag_Color_Diagnostics := Off;
-         else
-            --  On Linux/Unix/Mac OS X: use color only when the output is to a
-            --  tty.
-            if isatty (2) /= 0 then
-               Flag_Color_Diagnostics := On;
-            else
-               Flag_Color_Diagnostics := Off;
-            end if;
-         end if;
-      end if;
-   end Detect_Terminal;
+      Log_Line
+        (Msg & ": cannot handle " & Iir_Kind'Image (Get_Kind (An_Iir))
+           & " (" & Disp_Location (An_Iir) & ')');
+      raise Internal_Error;
+   end Error_Kind;
 
-   --  Color to be used for various part of messages.
-   type Color_Type is (Color_Locus,
-                       Color_Note, Color_Warning, Color_Error, Color_Fatal,
-                       Color_Message,
-                       Color_None);
-
-   --  Switch to COLOR.
-   procedure Set_Color (Color : Color_Type)
-   is
-      procedure Put (S : String)
-      is
-         use Ada.Text_IO;
-      begin
-         Put (Standard_Error, S);
-      end Put;
+   procedure Error_Kind (Msg : String; Def : Iir_Predefined_Functions) is
    begin
-      if Flag_Color_Diagnostics = Off then
-         return;
-      end if;
+      Log_Line
+        (Msg & ": cannot handle " & Iir_Predefined_Functions'Image (Def));
+      raise Internal_Error;
+   end Error_Kind;
 
-      --  Use ANSI sequences.
-      --  They are also documented on msdn in 'Console Virtual Terminal
-      --  sequences'.
+   procedure Error_Kind (Msg : String; N : PSL_Node) is
+   begin
+      Log (Msg);
+      Log (": cannot handle ");
+      Log_Line (PSL.Nodes.Nkind'Image (PSL.Nodes.Get_Kind (N)));
+      raise Internal_Error;
+   end Error_Kind;
 
-      Put (ASCII.ESC & '[');
-      case Color is
-         when Color_Locus   => Put ("1");    --  Bold
-         when Color_Note    => Put ("1;36"); --  Bold, cyan
-         when Color_Warning => Put ("1;35"); --  Bold, magenta
-         when Color_Error   => Put ("1;31"); --  Bold, red
-         when Color_Fatal   => Put ("1;33"); --  Bold, yellow
-         when Color_Message => Put ("0;1");  --  Normal, bold
-         when Color_None    => Put ("0");    --  Normal
-      end case;
-      Put ("m");
-   end Set_Color;
+   function Natural_Image (Val: Natural) return String
+   is
+      Str: constant String := Natural'Image (Val);
+   begin
+      return Str (Str'First + 1 .. Str'Last);
+   end Natural_Image;
+
+   function Get_Error_Col (E : Error_Record) return Natural
+   is
+      Line_Pos : Source_Ptr;
+   begin
+      Line_Pos := File_Line_To_Position (E.File, E.Line);
+      return Coord_To_Col (E.File, Line_Pos, E.Offset);
+   end Get_Error_Col;
+
+   Report_Handler : Report_Msg_Handler;
+
+   procedure Set_Report_Handler (Handler : Report_Msg_Handler) is
+   begin
+      Report_Handler := Handler;
+   end Set_Report_Handler;
 
    --  Warnings.
 
@@ -183,6 +157,11 @@ package body Errorout is
       return (Kind => Earg_Char, Val_Char => V);
    end "+";
 
+   function "+" (V : String8_Len_Type) return Earg_Type is
+   begin
+      return (Kind => Earg_String8, Val_Str8 => V);
+   end "+";
+
    function Get_Location_Safe (N : Iir) return Location_Type is
    begin
       if N = Null_Iir then
@@ -205,90 +184,6 @@ package body Errorout is
       end if;
    end "+";
 
-   Msg_Len : Natural;
-
-   procedure Put (Str : String)
-   is
-      use Ada.Text_IO;
-   begin
-      Msg_Len := Msg_Len + Str'Length;
-      Put (Standard_Error, Str);
-   end Put;
-
-   procedure Put (C : Character)
-   is
-      use Ada.Text_IO;
-   begin
-      Msg_Len := Msg_Len + 1;
-      Put (Standard_Error, C);
-   end Put;
-
-   procedure Put_Line (Str : String := "")
-   is
-      use Ada.Text_IO;
-   begin
-      Put_Line (Standard_Error, Str);
-      Msg_Len := 0;
-   end Put_Line;
-
-   procedure Disp_Natural (Val: Natural)
-   is
-      Str: constant String := Natural'Image (Val);
-   begin
-      Put (Str (Str'First + 1 .. Str'Last));
-   end Disp_Natural;
-
-   procedure Error_Kind (Msg : String; An_Iir : Iir) is
-   begin
-      Put_Line (Msg & ": cannot handle "
-                & Iir_Kind'Image (Get_Kind (An_Iir))
-                & " (" & Disp_Location (An_Iir) & ')');
-      raise Internal_Error;
-   end Error_Kind;
-
-   procedure Error_Kind (Msg : String; Def : Iir_Predefined_Functions) is
-   begin
-      Put_Line (Msg & ": cannot handle "
-                & Iir_Predefined_Functions'Image (Def));
-      raise Internal_Error;
-   end Error_Kind;
-
-   procedure Error_Kind (Msg : String; N : PSL_Node) is
-   begin
-      Put (Msg);
-      Put (": cannot handle ");
-      Put_Line (PSL.Nodes.Nkind'Image (PSL.Nodes.Get_Kind (N)));
-      raise Internal_Error;
-   end Error_Kind;
-
-   procedure Disp_Location
-     (File: Name_Id; Line: Natural; Col: Natural) is
-   begin
-      if File = Null_Identifier then
-         Put ("??");
-      else
-         Put (Name_Table.Image (File));
-      end if;
-      Put (':');
-      Disp_Natural (Line);
-      Put (':');
-      Disp_Natural (Col);
-      Put (':');
-   end Disp_Location;
-
-   procedure Set_Program_Name (Name : String) is
-   begin
-      Program_Name := new String'(Name);
-   end Set_Program_Name;
-
-   procedure Disp_Program_Name is
-   begin
-      if Program_Name /= null then
-         Put (Program_Name.all);
-         Put (':');
-      end if;
-   end Disp_Program_Name;
-
    procedure Report_Msg (Id : Msgid_Type;
                          Origin : Report_Origin;
                          Loc : Location_Type;
@@ -296,7 +191,6 @@ package body Errorout is
                          Args : Earg_Arr := No_Eargs;
                          Cont : Boolean := False)
    is
-      pragma Unreferenced (Cont);
       procedure Location_To_Position (Location : Location_Type;
                                       File : out Source_File_Entry;
                                       Line : out Natural;
@@ -312,116 +206,74 @@ package body Errorout is
 
       File : Source_File_Entry;
       Line : Natural;
-      Col : Natural;
-      Progname : Boolean;
+      New_Id : Msgid_Type;
+      Offset : Natural;
+      Loc_Length : Natural;
+      Line_Pos : Source_Ptr;
+      pragma Unreferenced (Line_Pos);
    begin
-      --  By default, no location.
+      --  Discard warnings that aren't enabled.
+      if Id in Msgid_Warnings and then not Is_Warning_Enabled (Id) then
+         return;
+      end if;
+
+      --  Reclassify warnings to errors if -Werror.
+      if Flags.Warn_Error
+        and then (Id = Msgid_Warning or Id in Msgid_Warnings)
+      then
+         New_Id := Msgid_Error;
+      else
+         New_Id := Id;
+      end if;
+      pragma Unreferenced (Id);
+
+      --  Limit the number of errors.
+      if not Cont and then New_Id = Msgid_Error then
+         Nbr_Errors := Nbr_Errors + 1;
+         if Nbr_Errors > Max_Nbr_Errors then
+            return;
+         end if;
+      end if;
+
+      --  Set error location.
       File := No_Source_File_Entry;
       Line := 0;
-      Col := 0;
-
-      --  And no program name.
-      Progname := False;
-
-      Detect_Terminal;
+      Offset := 0;
+      Loc_Length := 0;
 
       case Origin is
          when Option
            | Library =>
-            Progname := True;
-         when Elaboration =>
-            if Loc = No_Location then
-               Progname := True;
+            pragma Assert (Loc = No_Location);
+            null;
+         when others =>
+            if Loc /= No_Location then
+               Location_To_Coord (Loc, File, Line_Pos, Line, Offset);
             else
-               Location_To_Position (Loc, File, Line, Col);
-            end if;
-         when Scan =>
-            if Loc = No_Location then
-               File := Scanner.Get_Current_Source_File;
-               Line := Scanner.Get_Current_Line;
-               Col := Scanner.Get_Current_Column;
-            else
-               Location_To_Position (Loc, File, Line, Col);
-            end if;
-         when Parse =>
-            if Loc = No_Location then
-               File := Scanner.Get_Current_Source_File;
-               Line := Scanner.Get_Current_Line;
-               Col := Scanner.Get_Token_Column;
-            else
-               Location_To_Position (Loc, File, Line, Col);
-            end if;
-         when Semantic =>
-            if Loc = No_Location then
-               File := No_Source_File_Entry;
-               Line := 0;
-               Col := 0;
-            else
-               Location_To_Position (Loc, File, Line, Col);
+               case Origin is
+                  when Option
+                    | Library =>
+                     raise Program_Error;
+                  when Elaboration =>
+                     null;
+                  when Scan =>
+                     File := Scanner.Get_Current_Source_File;
+                     Line := Scanner.Get_Current_Line;
+                     Offset  := Scanner.Get_Current_Offset;
+                     Loc_Length := 1;
+                  when Parse =>
+                     File := Scanner.Get_Current_Source_File;
+                     Line := Scanner.Get_Current_Line;
+                     Offset  := Scanner.Get_Token_Offset;
+                     Loc_Length := Scanner.Get_Current_Offset - Offset;
+                  when Semantic =>
+                     null;
+               end case;
             end if;
       end case;
 
-      Msg_Len := 0;
-
-      if Flag_Color_Diagnostics = On then
-         Set_Color (Color_Locus);
-      end if;
-
-      if Progname then
-         Disp_Program_Name;
-      elsif File /= No_Source_File_Entry then
-         Disp_Location (Get_File_Name (File), Line, Col);
-      else
-         Disp_Location (Null_Identifier, 0, 0);
-      end if;
-
-      --  Display level.
-      declare
-         Id_Level : Msgid_Type;
-      begin
-         if Flags.Warn_Error
-           and then (Id = Msgid_Warning or Id in Msgid_Warnings)
-         then
-            Id_Level := Msgid_Error;
-         else
-            Id_Level := Id;
-         end if;
-
-         case Id_Level is
-            when Msgid_Note =>
-               if Flag_Color_Diagnostics = On then
-                  Set_Color (Color_Note);
-               end if;
-               Put ("note:");
-            when Msgid_Warning | Msgid_Warnings =>
-               if Flag_Color_Diagnostics = On then
-                  Set_Color (Color_Warning);
-               end if;
-               Put ("warning:");
-            when Msgid_Error =>
-               Nbr_Errors := Nbr_Errors + 1;
-               if Flag_Color_Diagnostics = On then
-                  Set_Color (Color_Error);
-               end if;
-               if Msg_Len = 0
-                 or else Flag_Color_Diagnostics = On
-               then
-                  --  'error:' is displayed only if not location is present, or
-                  --  if messages are colored.
-                  Put ("error:");
-               end if;
-            when Msgid_Fatal =>
-               if Flag_Color_Diagnostics = On then
-                  Set_Color (Color_Fatal);
-               end if;
-               Put ("fatal:");
-         end case;
-      end;
-
-      if Flag_Color_Diagnostics = On then
-         Set_Color (Color_Message);
-      end if;
-      Put (' ');
+      Report_Handler.Error_Start
+        (Err => (Origin, New_Id, Cont, File, Line, Offset, Loc_Length));
 
       --  Display message.
       declare
@@ -433,13 +285,13 @@ package body Errorout is
          Argn := Args'First;
          while N <= Msg'Last loop
             if Msg (N) = '%' then
-               Put (Msg (First .. N - 1));
+               Report_Handler.Message (Msg (First .. N - 1));
                First := N + 2;
                pragma Assert (N < Msg'Last);
                N := N + 1;
                case Msg (N) is
                   when '%' =>
-                     Put ('%');
+                     Report_Handler.Message ("%");
                      Argn := Argn - 1;
                   when 'i' =>
                      --  Identifier.
@@ -447,7 +299,7 @@ package body Errorout is
                         Arg : Earg_Type renames Args (Argn);
                         Id : Name_Id;
                      begin
-                        Put ('"');
+                        Report_Handler.Message ("""");
                         case Arg.Kind is
                            when Earg_Iir =>
                               Id := Get_Identifier (Arg.Val_Iir);
@@ -457,23 +309,23 @@ package body Errorout is
                               --  Invalid conversion to identifier.
                               raise Internal_Error;
                         end case;
-                        Put (Name_Table.Image (Id));
-                        Put ('"');
+                        Report_Handler.Message (Name_Table.Image (Id));
+                        Report_Handler.Message ("""");
                      end;
                   when 'c' =>
                      --  Character
                      declare
                         Arg : Earg_Type renames Args (Argn);
                      begin
-                        Put (''');
+                        Report_Handler.Message ("'");
                         case Arg.Kind is
                            when Earg_Char =>
-                              Put (Arg.Val_Char);
+                              Report_Handler.Message ((1 => Arg.Val_Char));
                            when others =>
                               --  Invalid conversion to character.
                               raise Internal_Error;
                         end case;
-                        Put (''');
+                        Report_Handler.Message ("'");
                      end;
                   when 't' =>
                      --  A token
@@ -489,13 +341,16 @@ package body Errorout is
                               --  Invalid conversion to character.
                               raise Internal_Error;
                         end case;
-                        if Tok = Tok_Identifier then
-                           Put ("an identifier");
-                        else
-                           Put (''');
-                           Put (Image (Tok));
-                           Put (''');
-                        end if;
+                        case Tok is
+                           when Tok_Identifier =>
+                              Report_Handler.Message ("an identifier");
+                           when Tok_Eof =>
+                              Report_Handler.Message ("end of file");
+                           when others =>
+                              Report_Handler.Message ("'");
+                              Report_Handler.Message (Image (Tok));
+                              Report_Handler.Message ("'");
+                        end case;
                      end;
                   when 'l' =>
                      --  Location
@@ -506,7 +361,6 @@ package body Errorout is
                         Arg_Line : Natural;
                         Arg_Col : Natural;
                      begin
-                        pragma Assert (not Progname);
                         case Arg.Kind is
                            when Earg_Location =>
                               Arg_Loc := Arg.Val_Loc;
@@ -521,14 +375,15 @@ package body Errorout is
                         --  Do not print the filename if in the same file as
                         --  the error location.
                         if Arg_File = File then
-                           Put ("line ");
+                           Report_Handler.Message ("line ");
                         else
-                           Put (Name_Table.Image (Get_File_Name (Arg_File)));
-                           Put (':');
+                           Report_Handler.Message
+                             (Name_Table.Image (Get_File_Name (Arg_File)));
+                           Report_Handler.Message (":");
                         end if;
-                        Disp_Natural (Arg_Line);
-                        Put (':');
-                        Disp_Natural (Arg_Col);
+                        Report_Handler.Message (Natural_Image (Arg_Line));
+                        Report_Handler.Message (":");
+                        Report_Handler.Message (Natural_Image (Arg_Col));
                      end;
                   when 'n' =>
                      --  Node
@@ -537,11 +392,28 @@ package body Errorout is
                      begin
                         case Arg.Kind is
                            when Earg_Iir =>
-                              Put (Disp_Node (Arg.Val_Iir));
+                              Report_Handler.Message (Disp_Node (Arg.Val_Iir));
                            when others =>
                               --  Invalid conversion to node.
                               raise Internal_Error;
                         end case;
+                     end;
+                  when 's' =>
+                     --  String
+                     declare
+                        Arg : Earg_Type renames Args (Argn);
+                     begin
+                        Report_Handler.Message ("""");
+                        case Arg.Kind is
+                           when Earg_String8 =>
+                              Report_Handler.Message
+                                (Str_Table.String_String8
+                                   (Arg.Val_Str8.Str, Arg.Val_Str8.Len));
+                           when others =>
+                              --  Invalid conversion to character.
+                              raise Internal_Error;
+                        end case;
+                        Report_Handler.Message ("""");
                      end;
                   when others =>
                      --  Unknown format.
@@ -551,31 +423,23 @@ package body Errorout is
             end if;
             N := N + 1;
          end loop;
-         Put (Msg (First .. N - 1));
+         Report_Handler.Message (Msg (First .. N - 1));
 
          --  Are all arguments displayed ?
          pragma Assert (Argn > Args'Last);
       end;
 
-      if Flag_Diagnostics_Show_Option
-        and then Id in Msgid_Warnings
+      Report_Handler.Message_End.all;
+
+      if not Cont
+        and then New_Id = Msgid_Error
+        and then Nbr_Errors = Max_Nbr_Errors
       then
-         Put (" [-W");
-         Put (Warning_Image (Id));
-         Put ("]");
-      end if;
-
-      if Flag_Color_Diagnostics = On then
-         Set_Color (Color_None);
-      end if;
-
-      Put_Line;
-
-      if Flag_Caret_Diagnostics
-        and then (File /= No_Source_File_Entry and Line /= 0)
-      then
-         Put_Line (Extract_Expanded_Line (File, Line));
-         Put_Line ((1 .. Col - 1 => ' ') & '^');
+         --  Limit reached.  Emit a message.
+         Report_Handler.Error_Start (Err => (Option, Msgid_Error, False,
+                                             No_Source_File_Entry, 0, 0, 0));
+         Report_Handler.Message ("error limit reached");
+         Report_Handler.Message_End.all;
       end if;
    end Report_Msg;
 
@@ -633,57 +497,6 @@ package body Errorout is
    begin
       Report_Msg (Id, Elaboration, +Loc, Msg, Args, Cont);
    end Warning_Msg_Elab;
-
-   -- Disp a message during scan.
-   procedure Error_Msg_Scan (Msg: String) is
-   begin
-      Report_Msg (Msgid_Error, Scan, No_Location, Msg);
-   end Error_Msg_Scan;
-
-   procedure Error_Msg_Scan (Loc : Location_Type; Msg: String) is
-   begin
-      Report_Msg (Msgid_Error, Scan, Loc, Msg);
-   end Error_Msg_Scan;
-
-   procedure Error_Msg_Scan (Msg: String; Arg1 : Earg_Type) is
-   begin
-      Report_Msg (Msgid_Error, Scan, No_Location, Msg, (1 => Arg1));
-   end Error_Msg_Scan;
-
-   -- Disp a message during scan.
-   procedure Warning_Msg_Scan (Id : Msgid_Warnings; Msg: String) is
-   begin
-      Report_Msg (Id, Scan, No_Location, Msg);
-   end Warning_Msg_Scan;
-
-   procedure Warning_Msg_Scan (Id : Msgid_Warnings;
-                               Msg: String;
-                               Arg1 : Earg_Type;
-                               Cont : Boolean := False) is
-   begin
-      Report_Msg (Id, Scan, No_Location, Msg, (1 => Arg1), Cont);
-   end Warning_Msg_Scan;
-
-   procedure Error_Msg_Parse (Msg: String; Arg1 : Earg_Type) is
-   begin
-      Report_Msg (Msgid_Error, Parse, No_Location, Msg, (1 => Arg1));
-   end Error_Msg_Parse;
-
-   procedure Error_Msg_Parse
-     (Msg: String; Args : Earg_Arr := No_Eargs; Cont : Boolean := False) is
-   begin
-      Report_Msg (Msgid_Error, Parse, No_Location, Msg, Args, Cont);
-   end Error_Msg_Parse;
-
-   procedure Error_Msg_Parse_1 (Msg: String) is
-   begin
-      Report_Msg (Msgid_Error, Parse, No_Location, Msg);
-   end Error_Msg_Parse_1;
-
-   procedure Error_Msg_Parse (Loc : Location_Type; Msg: String) is
-   begin
-      Report_Msg (Msgid_Error, Parse, Loc, Msg);
-   end Error_Msg_Parse;
 
    -- Disp a message during semantic analysis.
    -- LOC is used for location and current token.
@@ -776,8 +589,8 @@ package body Errorout is
    is
       pragma Unreferenced (Expr);
    begin
-      Put ("internal error: ");
-      Put_Line (Msg);
+      Log ("internal error: ");
+      Log_Line (Msg);
       raise Internal_Error;
    end Error_Internal;
 
@@ -810,7 +623,7 @@ package body Errorout is
       begin
          Decl := Get_Type_Declarator (Node);
          if Decl = Null_Iir then
-            return "the anonymous " & Str
+            return "anonymous " & Str
               & " defined at " & Disp_Location (Node);
          else
             return Disp_Identifier (Decl, Str);
@@ -880,9 +693,10 @@ package body Errorout is
             return "overloaded name or expression";
 
          when Iir_Kind_Integer_Type_Definition
-           | Iir_Kind_Enumeration_Type_Definition
-           | Iir_Kind_Wildcard_Type_Definition =>
+           | Iir_Kind_Enumeration_Type_Definition =>
             return Image_Identifier (Get_Type_Declarator (Node));
+         when Iir_Kind_Wildcard_Type_Definition =>
+            return "<any>";
          when Iir_Kind_Array_Type_Definition =>
             return Disp_Type (Node, "array type");
          when Iir_Kind_Array_Subtype_Definition =>
@@ -940,15 +754,9 @@ package body Errorout is
          when Iir_Kind_Procedure_Call =>
             return "procedure call";
          when Iir_Kind_Selected_Name =>
-            Name_Table.Image (Get_Identifier (Node));
-            return '''
-              & Name_Table.Nam_Buffer (1 .. Name_Table.Nam_Length)
-              & ''';
+            return ''' & Name_Table.Image (Get_Identifier (Node)) & ''';
          when Iir_Kind_Simple_Name =>
-            Name_Table.Image (Get_Identifier (Node));
-            return '''
-              & Name_Table.Nam_Buffer (1 .. Name_Table.Nam_Length)
-              & ''';
+            return ''' & Name_Table.Image (Get_Identifier (Node)) & ''';
          when Iir_Kind_Reference_Name =>
             --  Shouldn't happen.
             return "name";
@@ -1410,8 +1218,7 @@ package body Errorout is
                return;
             end if;
          end if;
-         Image (Get_Identifier (Decl));
-         Append (Res, Nam_Buffer (1 .. Nam_Length));
+         Append (Res, Image (Get_Identifier (Decl)));
       end Append_Type;
 
    begin
@@ -1433,17 +1240,16 @@ package body Errorout is
 
          Id : constant Name_Id := Get_Identifier (Subprg);
       begin
-         Image (Id);
          case Id is
             when Std_Names.Name_Id_Operators
               | Std_Names.Name_Word_Operators
               | Std_Names.Name_Xnor
               | Std_Names.Name_Shift_Operators =>
                Append (Res, """");
-               Append (Res, Nam_Buffer (1 .. Nam_Length));
+               Append (Res, Image (Id));
                Append (Res, """");
             when others =>
-               Append (Res, Nam_Buffer (1 .. Nam_Length));
+               Append (Res, Image (Id));
          end case;
       end;
 

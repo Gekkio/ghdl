@@ -5,7 +5,7 @@ Building GHDL from Sources
 
 .. rubric:: Download
 
-GHDL can be downloaded as a `zip-file <https://github.com/tgingold/ghdl/archive/master.zip>`_
+GHDL can be downloaded as a `zip-file <https://github.com/ghdl/ghdl/archive/master.zip>`_/`tar-file <https://github.com/ghdl/ghdl/archive/master.tar.gz>`_
 (latest 'master' branch) or cloned with ``git clone`` from GitHub. GitHub
 offers HTTPS and SSH as transfer protocols. See the :ref:`RELEASE:Sources`
 page for further details. The installation directory is referred to as ``GHDLRoot``.
@@ -43,7 +43,6 @@ Here is a short comparison, so that you can choose the one you want to use:
    With mcode Backend <mcode/index>
    With LLVM Backend <llvm/index>
    With GCC Backend <gcc/index>
-   TestSuites
 
 .. HINT::
    The output of both GCC and LLVM is an executable file, but `mcode` does not
@@ -51,13 +50,23 @@ Here is a short comparison, so that you can choose the one you want to use:
    be replaced with direct execution of the binary. See section :ref:`USING:QuickStart`.
 
 After making your choice, you can jump to the corresponding section.
-However, we suggest you to read :ref:`BUILD:dir_structure` before, so that you
-know where the content is placed and which temporal files are expected to be
+However, we suggest you to read :ref:`BUILD:dir_structure` first, so that you
+know where the content will be placed and which files are expected to be
 created.
 
 .. HINT::
    Since GHDL is written in `Ada`, independently of the code generator you use,
    the `GNU Ada compiler`, `GNAT GPL`, is required, 2014 (or later) for ``x86``
-   (32 or 64 bits). `GNAT GPL` can be downloaded anonymously from `libre.adacore.com <http://libre.adacore.com/tools/gnat-gpl-edition/>`_.
+   (32 or 64 bit). `GNAT GPL` can be downloaded anonymously from `libre.adacore.com <http://libre.adacore.com/tools/gnat-gpl-edition/>`_.
    Then, untar and run the doinstall script. Alternatively, most GNU/Linux
    provide a package named ``gcc-ada`` or ``gcc-gnat``.
+
+.. HINT::
+  In these instructions, the configure script is executed in the source directory; but you can execute in a different
+  directory too, like this:
+
+	.. CODE:: Bash
+
+		$ mkdir ghdl-objs
+		$ cd ghdl-objs
+		$ ../path/to/ghdl/configure ...

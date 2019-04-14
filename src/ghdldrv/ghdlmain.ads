@@ -36,11 +36,14 @@ package Ghdlmain is
 
    --  Option_OK: OPTION is handled.
    --  Option_Bad: OPTION is unknown.
+   --  Option_Err: OPTION has an error (message was displayed).
    --  Option_Arg_Req: OPTION requires an argument.  Must be set only when
    --     ARG = "", the manager will recall Decode_Option.
    --  Option_Arg: OPTION used the argument.
    type Option_Res is
-     (Option_Bad, Option_Ok, Option_Arg, Option_Arg_Req, Option_End);
+     (Option_Bad, Option_Err,
+      Option_Ok, Option_Arg, Option_Arg_Req,
+      Option_End);
    procedure Decode_Option (Cmd : in out Command_Type;
                             Option : String;
                             Arg : String;
@@ -56,7 +59,7 @@ package Ghdlmain is
    procedure Disp_Long_Help (Cmd : Command_Type);
 
    --  Perform the action.
-   procedure Perform_Action (Cmd : in out Command_Type; Args : Argument_List)
+   procedure Perform_Action (Cmd : Command_Type; Args : Argument_List)
      is abstract;
 
    --  Register a command.

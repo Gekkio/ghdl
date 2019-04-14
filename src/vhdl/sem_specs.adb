@@ -22,6 +22,7 @@ with Evaluation; use Evaluation;
 with Std_Package; use Std_Package;
 with Errorout; use Errorout;
 with Sem; use Sem;
+with Sem_Lib; use Sem_Lib;
 with Sem_Scopes; use Sem_Scopes;
 with Sem_Assocs; use Sem_Assocs;
 with Libraries;
@@ -249,7 +250,7 @@ package body Sem_Specs is
       --  a given named entity.
       --  LRM 5.1
       --  Similarly, it is an error if two different attributes with the
-      --  same simple name (wether predefined or user-defined) are both
+      --  same simple name (whether predefined or user-defined) are both
       --  associated with a given named entity.
       Attr_Chain_Parent := Get_Attribute_Value_Chain_Parent (Decl);
       El := Get_Attribute_Value_Chain (Attr_Chain_Parent);
@@ -568,6 +569,11 @@ package body Sem_Specs is
       --  beyond the immediate declarative part, such as design unit or
       --  interfaces.
       if Is_Designator then
+         if Is_Error (Name) then
+            pragma Assert (Flags.Flag_Force_Analysis);
+            return True;
+         end if;
+
          --  LRM 5.1  Attribute specification
          --  An attribute specification for an attribute of a design unit
          --  (i.e. an entity declaration, an architecture, a configuration
@@ -700,6 +706,38 @@ package body Sem_Specs is
    procedure Sem_Attribute_Specification
      (Spec : Iir_Attribute_Specification; Scope : Iir)
    is
+      --  Emit an error message when NAME is not found.
+      procedure Error_Attribute_Specification (Name : Iir)
+      is
+         Inter : Name_Interpretation_Type;
+         Decl : Iir;
+      begin
+         if Flag_Relaxed_Rules or Vhdl_Std = Vhdl_93c then
+            --  Some (clueless ?) vendors put attribute specifications in
+            --  architectures for ports (declared in entities).  This is not
+            --  valid according to the LRM (eg: LRM02 5.1 Attribute
+            --  specification).  Be tolerant.
+            Inter := Get_Interpretation (Get_Identifier (Name));
+            if Valid_Interpretation (Inter) then
+               Decl := Get_Declaration (Inter);
+               if Get_Kind (Decl) = Iir_Kind_Interface_Signal_Declaration
+                 and then (Get_Kind (Get_Parent (Decl))
+                             = Iir_Kind_Entity_Declaration)
+                 and then Get_Kind (Scope) = Iir_Kind_Architecture_Body
+               then
+                  Warning_Msg_Sem
+                    (Warnid_Specs, +Name,
+                     "attribute for port %i must be specified in the entity",
+                     (1 => +Name));
+                  return;
+               end if;
+            end if;
+         end if;
+
+         Error_Msg_Sem
+           (+Name, "no %i for attribute specification", (1 => +Name));
+      end Error_Attribute_Specification;
+
       use Tokens;
 
       Name : Iir;
@@ -790,6 +828,9 @@ package body Sem_Specs is
               (Warnid_Specs, +Spec,
                "attribute specification apply to no named entity");
          end if;
+      elsif List = Null_Iir_Flist then
+         pragma Assert (Flags.Flag_Force_Analysis);
+         null;
       else
          --  o If a list of entity designators is supplied, then the
          --  attribute specification applies to the named entities denoted
@@ -806,9 +847,7 @@ package body Sem_Specs is
                   --  It is an error if the class of those names is not the
                   --  same as that denoted by entity class.
                   if not Sem_Named_Entities (Scope, El, Spec, True) then
-                     Error_Msg_Sem_Relaxed
-                       (El, Warnid_Specs,
-                        "no %i for attribute specification", (1 => +El));
+                     Error_Attribute_Specification (El);
                   end if;
                end if;
             end loop;
@@ -990,12 +1029,17 @@ package body Sem_Specs is
          for I in Flist_First .. Flist_Last (List) loop
             El := Get_Nth_Element (List, I);
 
-            Sem_Name (El);
-            El := Finish_Sem_Name (El);
-            Set_Nth_Element (List, I, El);
+            if Is_Error (El) then
+               Sig := Null_Iir;
+            else
+               Sem_Name (El);
+               El := Finish_Sem_Name (El);
+               Set_Nth_Element (List, I, El);
 
-            Sig := Get_Named_Entity (El);
-            Sig := Name_To_Object (Sig);
+               Sig := Get_Named_Entity (El);
+               Sig := Name_To_Object (Sig);
+            end if;
+
             if Sig /= Null_Iir then
                Set_Type (El, Get_Type (Sig));
                Prefix := Get_Object_Prefix (Sig);
@@ -1043,7 +1087,9 @@ package body Sem_Specs is
                --  Each signal must be declared in the declarative part
                --  enclosing the disconnection specification.
                --  FIXME: todo.
-            elsif Get_Designated_Entity (El) /= Error_Mark then
+            elsif not Is_Error (El)
+              and then Get_Designated_Entity (El) /= Error_Mark
+            then
                Error_Msg_Sem (+El, "name must designate a signal");
             end if;
          end loop;
@@ -1282,13 +1328,16 @@ package body Sem_Specs is
      (Parent_Stmts : Iir; Spec : Iir; Primary_Entity_Aspect : out Iir)
    is
       function Apply_Component_Specification
-        (Chain : Iir; Check_Applied : Boolean)
-        return Boolean
+        (Chain : Iir; Check_Applied : Boolean) return Boolean
       is
          Comp : constant Iir := Get_Named_Entity (Get_Component_Name (Spec));
          El : Iir;
          Res : Boolean;
       begin
+         if Chain = Null_Iir then
+            return False;
+         end if;
+
          El := Get_Concurrent_Statement_Chain (Chain);
          Res := False;
          while El /= Null_Iir loop
@@ -1328,7 +1377,12 @@ package body Sem_Specs is
       Inst_Unit : Iir;
    begin
       Primary_Entity_Aspect := Null_Iir;
-      Comp_Name := Sem_Denoting_Name (Get_Component_Name (Spec));
+      Comp_Name := Get_Component_Name (Spec);
+      if Is_Error (Comp_Name) then
+         pragma Assert (Flags.Flag_Force_Analysis);
+         return;
+      end if;
+      Comp_Name := Sem_Denoting_Name (Comp_Name);
       Set_Component_Name (Spec, Comp_Name);
       Comp := Get_Named_Entity (Comp_Name);
       if Get_Kind (Comp) /= Iir_Kind_Component_Declaration then
@@ -1430,7 +1484,12 @@ package body Sem_Specs is
       Component : Iir;
    begin
       Sem_Component_Specification (Parent_Stmts, Conf, Primary_Entity_Aspect);
-      Component := Get_Named_Entity (Get_Component_Name (Conf));
+      Component := Get_Component_Name (Conf);
+      if Is_Error (Component) then
+         pragma Assert (Flags.Flag_Force_Analysis);
+         return;
+      end if;
+      Component := Get_Named_Entity (Component);
 
       --  Return now in case of error.
       if Get_Kind (Component) /= Iir_Kind_Component_Declaration then
@@ -1509,7 +1568,7 @@ package body Sem_Specs is
          null;
       end if;
 
-      Design_Unit := Libraries.Load_Primary_Unit
+      Design_Unit := Load_Primary_Unit
         (Get_Library (Get_Design_File (Entity_Unit)),
          Get_Identifier (Get_Library_Unit (Entity_Unit)),
          Parent);

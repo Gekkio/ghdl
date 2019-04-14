@@ -688,6 +688,36 @@ package body Evaluation is
          when Iir_Predefined_Integer_To_String =>
             return Eval_Integer_Image (Get_Value (Operand), Orig);
 
+         when Iir_Predefined_Array_Char_To_String =>
+            --  LRM08 5.7 String representation
+            --  - For a given value that is of a one-dimensional array type
+            --    whose element type is a character type that contains only
+            --    character literals, the string representation has the same
+            --    length as the given value.  Each element of the string
+            --    representation is the same character literal as the matching
+            --    element of the given value.
+            declare
+               Saggr : Iir;
+               Lits : Iir_Flist;
+               El : Iir;
+               C : Character;
+               String_Id : String8_Id;
+               Len : Natural;
+            begin
+               Saggr := Eval_String_Literal (Operand);
+               Lits := Get_Simple_Aggregate_List (Saggr);
+               Len := Get_Nbr_Elements (Lits);
+               String_Id := Str_Table.Create_String8;
+               for I in Flist_First .. Flist_Last (Lits) loop
+                  El := Get_Nth_Element (Lits, I);
+                  C := Get_Character (Get_Identifier (El));
+                  Str_Table.Append_String8_Char (C);
+               end loop;
+               Free_Eval_String_Literal (Saggr, Operand);
+
+               return Build_String (String_Id, Nat32 (Len), Orig);
+            end;
+
          when Iir_Predefined_Vector_Minimum
            | Iir_Predefined_Vector_Maximum =>
             --  LRM08 5.3.2.4 Predefined operations on array types
@@ -1941,30 +1971,32 @@ package body Evaluation is
          --  LRM08 5.7 String representations
          --  - [...] otherwise, the string representation is the sequence of
          --    characters in the identifier that is the given value.
-         --  FIXME: extended identifier.
-         Image (Id);
-         if Nam_Buffer (1) /= '\' then
-            Append_String8_String (Nam_Buffer (1 .. Nam_Length));
-            Len := Nam_Length;
-         else
-            declare
-               Skip : Boolean;
-               C : Character;
-            begin
-               Len := 0;
-               Skip := False;
-               for I in 2 .. Nam_Length - 1 loop
-                  if Skip then
-                     Skip := False;
-                  else
-                     C := Nam_Buffer (I);
-                     Append_String8_Char (C);
-                     Skip := C = '\';
-                     Len := Len + 1;
-                  end if;
-               end loop;
-            end;
-         end if;
+         declare
+            Img : constant String := Image (Id);
+         begin
+            if Img (Img'First) /= '\' then
+               Append_String8_String (Img);
+               Len := Img'Length;
+            else
+               declare
+                  Skip : Boolean;
+                  C : Character;
+               begin
+                  Len := 0;
+                  Skip := False;
+                  for I in Img'First + 1 .. Img'Last - 1 loop
+                     if Skip then
+                        Skip := False;
+                     else
+                        C := Img (I);
+                        Append_String8_Char (C);
+                        Skip := C = '\';
+                        Len := Len + 1;
+                     end if;
+                  end loop;
+               end;
+            end if;
+         end;
       end if;
       return Build_String (Image_Id, Nat32 (Len), Orig);
    end Eval_Enum_To_String;
@@ -2221,7 +2253,7 @@ package body Evaluation is
 
    function Eval_Selected_Element (Expr : Iir) return Iir
    is
-      Selected_El : constant Iir := Get_Selected_Element (Expr);
+      Selected_El : constant Iir := Get_Named_Entity (Expr);
       El_Pos : constant Iir_Index32 := Get_Element_Position (Selected_El);
       Prefix : Iir;
       Cur_Pos : Iir_Index32;
@@ -2360,6 +2392,7 @@ package body Evaluation is
       El : Iir;
    begin
       Idx := Eval_Static_Expr (Get_Nth_Element (Indexes, 0));
+      Set_Nth_Element (Indexes, 0, Idx);
       Pos := Eval_Pos_In_Range (Index_Range, Idx);
 
       El := Get_Nth_Element (Get_Simple_Aggregate_List (Aggr), Natural (Pos));
@@ -2410,8 +2443,136 @@ package body Evaluation is
          when others =>
             Error_Kind ("eval_indexed_name", Prefix);
       end case;
-      return Null_Iir;
    end Eval_Indexed_Name;
+
+   function Eval_Indexed_Aggregate_By_Offset
+     (Aggr : Iir; Off : Iir_Index32; Dim : Natural := 0) return Iir
+   is
+      Prefix_Type : constant Iir := Get_Type (Aggr);
+      Indexes_Type : constant Iir_Flist :=
+        Get_Index_Subtype_List (Prefix_Type);
+      Assoc : Iir;
+      Assoc_Expr : Iir;
+      Assoc_Len : Iir_Index32;
+      Aggr_Bounds : Iir;
+      Cur_Off : Iir_Index32;
+      Res : Iir;
+      Left_Pos : Iir_Int64;
+      Assoc_Pos : Iir_Int64;
+   begin
+      Aggr_Bounds := Eval_Static_Range (Get_Nth_Element (Indexes_Type, Dim));
+      Left_Pos := Eval_Pos (Eval_Discrete_Range_Left (Aggr_Bounds));
+
+      Cur_Off := 0;
+      Assoc := Get_Association_Choices_Chain (Aggr);
+      Assoc_Expr := Null_Iir;
+      while Assoc /= Null_Iir loop
+         if not Get_Same_Alternative_Flag (Assoc) then
+            Assoc_Expr := Assoc;
+         end if;
+         case Get_Kind (Assoc) is
+            when Iir_Kind_Choice_By_None =>
+               if Get_Element_Type_Flag (Assoc) then
+                  if Off = Cur_Off then
+                     return Get_Associated_Expr (Assoc);
+                  end if;
+                  Assoc_Len := 1;
+               else
+                  Res := Get_Associated_Expr (Assoc);
+                  Assoc_Len := Iir_Index32
+                    (Eval_Discrete_Range_Length
+                       (Get_Index_Type (Get_Type (Res), 0)));
+                  if Off >= Cur_Off and then Off < Cur_Off + Assoc_Len then
+                     return Eval_Indexed_Name_By_Offset (Res, Off - Cur_Off);
+                  end if;
+               end if;
+               Cur_Off := Cur_Off + Assoc_Len;
+            when Iir_Kind_Choice_By_Expression =>
+               Assoc_Pos := Eval_Pos (Get_Choice_Expression (Assoc));
+               case Get_Direction (Aggr_Bounds) is
+                  when Iir_To =>
+                     Cur_Off := Iir_Index32 (Assoc_Pos - Left_Pos);
+                  when Iir_Downto =>
+                     Cur_Off := Iir_Index32 (Left_Pos - Assoc_Pos);
+               end case;
+               if Cur_Off = Off then
+                  return Get_Associated_Expr (Assoc);
+               end if;
+            when Iir_Kind_Choice_By_Range =>
+               declare
+                  Rng : Iir;
+                  Left : Iir_Int64;
+                  Right : Iir_Int64;
+                  Hi, Lo : Iir_Int64;
+                  Lo_Off, Hi_Off : Iir_Index32;
+               begin
+                  Rng := Eval_Range (Get_Choice_Range (Assoc));
+                  Set_Choice_Range (Assoc, Rng);
+
+                  Left := Eval_Pos (Get_Left_Limit (Rng));
+                  Right := Eval_Pos (Get_Right_Limit (Rng));
+                  case Get_Direction (Rng) is
+                     when Iir_To =>
+                        Lo := Left;
+                        Hi := Right;
+                     when Iir_Downto =>
+                        Lo := Right;
+                        Hi := Left;
+                  end case;
+                  case Get_Direction (Aggr_Bounds) is
+                     when Iir_To =>
+                        Lo_Off := Iir_Index32 (Lo - Left_Pos);
+                        Hi_Off := Iir_Index32 (Hi - Left_Pos);
+                     when Iir_Downto =>
+                        Lo_Off := Iir_Index32 (Left_Pos - Lo);
+                        Hi_Off := Iir_Index32 (Left_Pos - Hi);
+                  end case;
+                  if Off >= Lo_Off and then Off <= Hi_Off then
+                     Res := Get_Associated_Expr (Assoc);
+                     if Get_Element_Type_Flag (Assoc) then
+                        return Res;
+                     else
+                        return Eval_Indexed_Name_By_Offset
+                          (Res, Off - Lo_Off);
+                     end if;
+                  end if;
+               end;
+            when Iir_Kind_Choice_By_Others =>
+               return Get_Associated_Expr (Assoc_Expr);
+            when others =>
+               raise Internal_Error;
+         end case;
+         Assoc := Get_Chain (Assoc);
+      end loop;
+      raise Internal_Error;
+   end Eval_Indexed_Aggregate_By_Offset;
+
+   function Eval_Indexed_Name_By_Offset (Prefix : Iir; Off : Iir_Index32)
+                                        return Iir
+   is
+   begin
+      case Get_Kind (Prefix) is
+         when Iir_Kind_Aggregate =>
+            return Eval_Indexed_Aggregate_By_Offset (Prefix, Off);
+         when Iir_Kind_String_Literal8 =>
+            declare
+               Id : constant String8_Id := Get_String8_Id (Prefix);
+               El_Type : constant Iir :=
+                 Get_Element_Subtype (Get_Type (Prefix));
+               Enums : constant Iir_Flist :=
+                 Get_Enumeration_Literal_List (El_Type);
+               Lit : Pos32;
+            begin
+               Lit := Str_Table.Element_String8 (Id, Int32 (Off + 1));
+               return Get_Nth_Element (Enums, Natural (Lit));
+            end;
+         when Iir_Kind_Simple_Aggregate =>
+            return Get_Nth_Element (Get_Simple_Aggregate_List (Prefix),
+                                    Natural (Off));
+         when others =>
+            Error_Kind ("eval_indexed_name_by_offset", Prefix);
+      end case;
+   end Eval_Indexed_Name_By_Offset;
 
    function Eval_Static_Expr (Expr: Iir) return Iir
    is
@@ -2555,6 +2716,7 @@ package body Evaluation is
             begin
                Param := Get_Parameter (Expr);
                Param := Eval_Static_Expr (Param);
+               Eval_Check_Bound (Param, Get_Type (Get_Prefix (Expr)));
                Set_Parameter (Expr, Param);
 
                --  Special case for overflow.
@@ -2700,14 +2862,15 @@ package body Evaluation is
          when Iir_Kind_Simple_Name_Attribute =>
             declare
                use Str_Table;
+               Img : constant String :=
+                 Image (Get_Simple_Name_Identifier (Expr));
                Id : String8_Id;
             begin
                Id := Create_String8;
-               Image (Get_Simple_Name_Identifier (Expr));
-               for I in 1 .. Nam_Length loop
-                  Append_String8_Char (Nam_Buffer (I));
+               for I in Img'Range loop
+                  Append_String8_Char (Img (I));
                end loop;
-               return Build_String (Id, Nat32 (Nam_Length), Expr);
+               return Build_String (Id, Nat32 (Img'Length), Expr);
             end;
 
          when Iir_Kind_Null_Literal =>
@@ -3384,6 +3547,7 @@ package body Evaluation is
             when Iir_Kind_Range_Array_Attribute
               | Iir_Kind_Reverse_Range_Array_Attribute =>
                declare
+                  Indexes_List : Iir_Flist;
                   Prefix : Iir;
                   Res : Iir;
                   Dim : Natural;
@@ -3398,9 +3562,15 @@ package body Evaluation is
                      --  Unconstrained object.
                      return Null_Iir;
                   end if;
+                  Indexes_List := Get_Index_Subtype_List (Prefix);
                   Dim := Eval_Attribute_Parameter_Or_1 (Expr);
-                  Expr := Get_Nth_Element
-                    (Get_Index_Subtype_List (Prefix), Dim - 1);
+                  if Dim < 1
+                    or else Dim > Get_Nbr_Elements (Indexes_List)
+                  then
+                     --  Avoid cascaded errors.
+                     Dim := 1;
+                  end if;
+                  Expr := Get_Nth_Element (Indexes_List, Dim - 1);
                   if Kind = Iir_Kind_Reverse_Range_Array_Attribute then
                      Expr := Eval_Static_Range (Expr);
 
@@ -3500,63 +3670,33 @@ package body Evaluation is
       end case;
    end Eval_Is_Eq;
 
-   procedure Eval_Operator_Symbol_Name (Id : Name_Id)
-   is
+   function Eval_Operator_Symbol_Name (Id : Name_Id) return String is
    begin
-      Image (Id);
-      Nam_Buffer (2 .. Nam_Length + 1) := Nam_Buffer (1 .. Nam_Length);
-      Nam_Buffer (1) := '"'; --"
-      Nam_Length := Nam_Length + 2;
-      Nam_Buffer (Nam_Length) := '"'; --"
+      return '"' & Image (Id) & '"';
    end Eval_Operator_Symbol_Name;
 
-   procedure Eval_Simple_Name (Id : Name_Id)
-   is
+   function Eval_Simple_Name (Id : Name_Id) return String is
    begin
       --  LRM 14.1
       --  E'SIMPLE_NAME
       --    Result: [...] but with apostrophes (in the case of a character
       --            literal)
       if Is_Character (Id) then
-         Nam_Buffer (1) := ''';
-         Nam_Buffer (2) := Get_Character (Id);
-         Nam_Buffer (3) := ''';
-         Nam_Length := 3;
-         return;
+         return ''' & Get_Character (Id) & ''';
       end if;
       case Id is
          when Std_Names.Name_Word_Operators
            | Std_Names.Name_First_Operator .. Std_Names.Name_Last_Operator =>
-            Eval_Operator_Symbol_Name (Id);
-            return;
+            return Eval_Operator_Symbol_Name (Id);
          when Std_Names.Name_Xnor
            | Std_Names.Name_Shift_Operators =>
             if Flags.Vhdl_Std > Vhdl_87 then
-               Eval_Operator_Symbol_Name (Id);
-               return;
+               return Eval_Operator_Symbol_Name (Id);
             end if;
          when others =>
             null;
       end case;
-      Image (Id);
---       if Name_Buffer (1) = '\' then
---          declare
---             I : Natural;
---          begin
---             I := 2;
---             while I <= Name_Length loop
---                if Name_Buffer (I) = '\' then
---                   Name_Length := Name_Length + 1;
---                   Name_Buffer (I + 1 .. Name_Length) :=
---                     Name_Buffer (I .. Name_Length - 1);
---                   I := I + 1;
---                end if;
---                I := I + 1;
---             end loop;
---             Name_Length := Name_Length + 1;
---             Name_Buffer (Name_Length) := '\';
---          end;
---       end if;
+      return Image (Id);
    end Eval_Simple_Name;
 
    package body String_Utils is
@@ -3669,11 +3809,9 @@ package body Evaluation is
 
       procedure Path_Add_Type_Name (Atype : Iir)
       is
-         Adecl : Iir;
+         Adecl : constant Iir := Get_Type_Declarator (Atype);
       begin
-         Adecl := Get_Type_Declarator (Atype);
-         Image (Get_Identifier (Adecl));
-         Path_Add (Nam_Buffer (1 .. Nam_Length));
+         Path_Add (Image (Get_Identifier (Adecl)));
       end Path_Add_Type_Name;
 
       procedure Path_Add_Signature (Subprg : Iir)
@@ -3700,12 +3838,13 @@ package body Evaluation is
          Path_Add ("]");
       end Path_Add_Signature;
 
-      procedure Path_Add_Name (N : Iir) is
+      procedure Path_Add_Name (N : Iir)
+      is
+         Img : constant String := Eval_Simple_Name (Get_Identifier (N));
       begin
-         Eval_Simple_Name (Get_Identifier (N));
-         if Nam_Buffer (1) /= 'P' then
+         if Img (Img'First) /= 'P' then
             --  Skip anonymous processes.
-            Path_Add (Nam_Buffer (1 .. Nam_Length));
+            Path_Add (Img);
          end if;
       end Path_Add_Name;
 

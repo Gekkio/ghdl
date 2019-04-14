@@ -15,7 +15,7 @@
 --  along with GHDL; see the file COPYING.  If not, write to the Free
 --  Software Foundation, 59 Temple Place - Suite 330, Boston, MA
 --  02111-1307, USA.
-with Ada.Text_IO; use Ada.Text_IO;
+with Ada.Text_IO;
 with Name_Table;
 with Errorout; use Errorout;
 with Libraries;
@@ -63,10 +63,9 @@ package body Options is
       return False;
    end Option_Warning;
 
-   function Parse_Option (Option : String) return Boolean
+   function Parse_Option (Opt : String) return Boolean
    is
-      subtype Option_String is String (1 .. Option'Length);
-      Opt : Option_String renames Option;
+      pragma Assert (Opt'First = 1);
    begin
       if Opt'Last > 5 and then Opt (1 .. 6) = "--std=" then
          if Opt'Length = 8 then
@@ -112,18 +111,18 @@ package body Options is
       elsif Opt'Length > 7 and then Opt (1 .. 7) = "--warn-" then
          return Option_Warning (Opt (8 .. Opt'Last), True);
       elsif Opt'Length > 5 and then Opt (1 .. 5) = "-Wno-" then
-         --  Handle -Wno before -W!
+         --  Handle -Wno-xxx before -Wxxx
          return Option_Warning (Opt (6 .. Opt'Last), False);
       elsif Opt'Length > 2 and then Opt (1 .. 2) = "-W" then
          return Option_Warning (Opt (3 .. Opt'Last), True);
       elsif Opt'Length > 7 and then Opt (1 .. 7) = "--work=" then
          declare
             use Name_Table;
+            Name : String (1 .. Opt'Last - 8 + 1);
          begin
-            Nam_Length := Opt'Last - 8 + 1;
-            Nam_Buffer (1 .. Nam_Length) := Opt (8 .. Opt'Last);
-            Scanner.Convert_Identifier;
-            Libraries.Work_Library_Name := Get_Identifier;
+            Name := Opt (8 .. Opt'Last);
+            Scanner.Convert_Identifier (Name);
+            Libraries.Work_Library_Name := Get_Identifier (Name);
          end;
       elsif Opt = "-C" or else Opt = "--mb-comments" then
          Mb_Comment := True;
@@ -159,7 +158,7 @@ package body Options is
          Bootstrap := True;
       elsif Opt = "-fexplicit" then
          Flag_Explicit := True;
-      elsif Opt = "-frelaxed-rules" then
+      elsif Opt = "-frelaxed-rules" or else Opt = "-frelaxed" then
          Flag_Relaxed_Rules := True;
       elsif Opt = "--syn-binding" then
          Flag_Syn_Binding := True;
@@ -200,29 +199,6 @@ package body Options is
          Flag_Integer_64 := True;
       elsif Opt = "--ftime32" then
          Flag_Time_64 := False;
---       elsif Opt'Length > 17
---         and then Opt (Beg .. Beg + 17) = "--time-resolution="
---       then
---          Beg := Beg + 18;
---          if Opt (Beg .. Beg + 1) = "fs" then
---             Time_Resolution := 'f';
---          elsif Opt (Beg .. Beg + 1) = "ps" then
---             Time_Resolution := 'p';
---          elsif Opt (Beg .. Beg + 1) = "ns" then
---             Time_Resolution := 'n';
---          elsif Opt (Beg .. Beg + 1) = "us" then
---             Time_Resolution := 'u';
---          elsif Opt (Beg .. Beg + 1) = "ms" then
---             Time_Resolution := 'm';
---          elsif Opt (Beg .. Beg + 2) = "sec" then
---             Time_Resolution := 's';
---          elsif Opt (Beg .. Beg + 2) = "min" then
---             Time_Resolution := 'M';
---          elsif Opt (Beg .. Beg + 1) = "hr" then
---             Time_Resolution := 'h';
---          else
---             return False;
---          end if;
       elsif Back_End.Parse_Option /= null
         and then Back_End.Parse_Option.all (Opt)
       then
@@ -236,7 +212,7 @@ package body Options is
    -- Disp help about these options.
    procedure Disp_Options_Help
    is
-      procedure P (S : String) renames Put_Line;
+      procedure P (S : String) renames Ada.Text_IO.Put_Line;
    begin
       P ("Main options:");
       P ("  --work=LIB         use LIB as work library");
@@ -257,8 +233,6 @@ package body Options is
       P ("  -Wunused           warns if a subprogram is never used");
       P ("  -Werror            turns warnings into errors");
 --    P ("Simulation option:");
---    P ("  --time-resolution=UNIT   set the resolution of type time");
---    P ("            UNIT can be fs, ps, ns, us, ms, sec, min or hr");
 --    P ("  --assert-level=LEVEL     set the level which stop the");
 --    P ("           simulation.  LEVEL is note, warning, error,");
 --    P ("           failure or none");

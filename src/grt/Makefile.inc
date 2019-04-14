@@ -52,7 +52,7 @@ ifeq ($(filter-out mingw32 mingw64,$(osys)),)
   GRT_EXTRA_LIB=-ldbghelp
 else
   GRT_TARGET_OBJS=jumps.o times.o
-  ifeq ($(filter-out linux,$(osys)),)
+  ifeq ($(filter-out linux%,$(osys)),)
     GRT_EXTRA_LIB=-ldl -lm $(GRT_ELF_OPTS)
   endif
   ifeq ($(filter-out netbsd freebsd% dragonfly%,$(osys)),)
@@ -98,7 +98,7 @@ MSYS2_ARG=MSYS2_ARG_CONV_EXCL="-aI;-gnatec"
 
 # Configuration pragmas.
 # -gnatdY is required to force the use of __gnat_last_chance_handler.
-GRT_PRAGMA_FLAG=-gnatec$(GRTSRCDIR)/grt.adc -gnat05 -gnatdY
+GRT_PRAGMA_FLAG=-gnatec$(GRTSRCDIR)/grt.adc -gnatdY
 
 # Rule to compile an Ada file.
 GRT_ADACOMPILE=$(GNATMAKE) -u -c $(GRT_FLAGS) $(GRT_PRAGMA_FLAG)
@@ -205,7 +205,7 @@ grt-disp-config:
 
 grt/grt-files: grt/run-bind.adb
 	sed -e "1,/-- *BEGIN/d" -e "/-- *END/,\$$d" \
-	  -e "s/   --   //" < $< > $@
+	  -e "s/   --   //" < $< | tr -d '\r' > $@
 
 # Remove local files (they are now in the libgrt library).
 # Also, remove the -shared option, in order not to build a shared library

@@ -34,7 +34,7 @@ with Str_Table;
 with Files_Map;
 with Iir_Chains; use Iir_Chains;
 with Simul.Simulation; use Simul.Simulation;
-with Grt.Astdio;
+with Grt.Astdio.Vhdl;
 with Grt.Stdio;
 with Grt.Options;
 with Grt.Vstrings;
@@ -74,23 +74,29 @@ package body Simul.Execution is
            | Kind_Process =>
             declare
                Current : Block_Instance_Acc;
-               --  Last : Block_Instance_Acc;
             begin
                Current := Instance;
                while Current /= null loop
                   if Current.Block_Scope = Scope then
                      return Current;
                   end if;
-               --  Last := Current;
                   Current := Current.Up_Block;
                end loop;
-               --  if Scope.Frame_Scope.Depth = 0
-               --    and then (Last.Block_Scope.Frame_Scope.Kind
-               --                = Scope_Kind_Package)
-               --  then
-               --     --  For instantiated packages.
-               --     return Last;
-               --  end if;
+               raise Internal_Error;
+            end;
+         when Kind_Protected =>
+            declare
+               Current : Block_Instance_Acc;
+            begin
+               Current := Instance;
+               while Current /= null loop
+                  if Current.Block_Scope = Scope
+                    or Current.Uninst_Scope = Scope
+                  then
+                     return Current;
+                  end if;
+                  Current := Current.Up_Block;
+               end loop;
                raise Internal_Error;
             end;
          when Kind_Package =>
@@ -143,8 +149,7 @@ package body Simul.Execution is
    end Get_Info_For_Scope;
 
    procedure Create_Right_Bound_From_Length
-     (Bounds : Iir_Value_Literal_Acc; Len : Iir_Index32)
-   is
+     (Bounds : Iir_Value_Literal_Acc; Len : Iir_Index32) is
    begin
       pragma Assert (Bounds.Right = null);
 
@@ -1324,32 +1329,36 @@ package body Simul.Execution is
                   if Is_Character (Id) then
                      Result := String_To_Iir_Value ((1 => Get_Character (Id)));
                   else
-                     Image (Id);
-                     if Nam_Buffer (1) = '\' then
-                        --  Reformat extended identifiers for to_image.
-                        pragma Assert (Nam_Buffer (Nam_Length) = '\');
-                        declare
-                           Npos : Natural;
-                           K : Natural;
-                           C : Character;
-                        begin
-                           Npos := 1;
-                           K := 2;
-                           while K < Nam_Length loop
-                              C := Nam_Buffer (K);
-                              Nam_Buffer (Npos) := C;
-                              Npos := Npos + 1;
-                              if C = '\' then
-                                 K := K + 2;
-                              else
-                                 K := K + 1;
-                              end if;
-                           end loop;
-                           Nam_Length := Npos - 1;
-                        end;
-                     end if;
-                     Result :=
-                       String_To_Iir_Value (Nam_Buffer (1 .. Nam_Length));
+                     declare
+                        Img : String := Image (Id);
+                     begin
+                        if Img (Img'First) = '\' then
+                           --  Reformat extended identifiers for to_image.
+                           pragma Assert (Img (Img'Last) = '\');
+                           declare
+                              Npos : Natural;
+                              K : Natural;
+                              C : Character;
+                           begin
+                              Npos := Img'First;
+                              K := Npos + 1;
+                              while K < Img'Last loop
+                                 C := Img (K);
+                                 Img (Npos) := C;
+                                 Npos := Npos + 1;
+                                 if C = '\' then
+                                    K := K + 2;
+                                 else
+                                    K := K + 1;
+                                 end if;
+                              end loop;
+                              Result := String_To_Iir_Value
+                                (Img (Img'First .. Npos - 1));
+                           end;
+                        else
+                           Result := String_To_Iir_Value (Img);
+                        end if;
+                     end;
                   end if;
                end if;
             end;
@@ -1605,6 +1614,8 @@ package body Simul.Execution is
             File_Operation.Untruncated_Text_Read
               (Args (0), Args (1), Args (2));
          when Std_Names.Name_Control_Simulation =>
+            --  FIXME: handle stop properly.
+            --  FIXME: this is the only place where longjump is called.
             Grt.Lib.Ghdl_Control_Simulation
               (Args (0).B1, Args (1).B1, Std_Integer (Args (2).I64));
             --  Do not return.
@@ -1709,22 +1720,20 @@ package body Simul.Execution is
    --  Create an iir_value_literal of kind iir_value_array and of life LIFE.
    --  Allocate the array of bounds, and fill it from A_TYPE.
    --  Allocate the array of values.
-   function Create_Array_Bounds_From_Type
-     (Block : Block_Instance_Acc;
-      A_Type : Iir;
-      Create_Val_Array : Boolean)
-     return Iir_Value_Literal_Acc
+   function Create_Array_Bounds_From_Type (Block : Block_Instance_Acc;
+                                           A_Type : Iir;
+                                           Create_Val_Array : Boolean)
+                                          return Iir_Value_Literal_Acc
    is
       --  Only for constrained subtypes.
-      pragma Assert (Get_Kind (A_Type) /= Iir_Kind_Array_Type_Definition);
+      pragma Assert (Get_Constraint_State (A_Type) = Fully_Constrained);
 
       Index_List : constant Iir_Flist := Get_Index_Subtype_List (A_Type);
       Res : Iir_Value_Literal_Acc;
       Len : Iir_Index32;
       Bound : Iir_Value_Literal_Acc;
    begin
-      Res := Create_Array_Value
-        (Iir_Index32 (Get_Nbr_Elements (Index_List)));
+      Res := Create_Array_Value (Iir_Index32 (Get_Nbr_Elements (Index_List)));
       Len := 1;
       for I in 1 .. Res.Bounds.Nbr_Dims loop
          Bound := Execute_Bounds
@@ -1830,18 +1839,18 @@ package body Simul.Execution is
    --  Fill LENGTH elements of RES, starting at ORIG by steps of STEP.
    --  Use expressions from (BLOCK, AGGREGATE) to fill the elements.
    --  EL_TYPE is the type of the array element.
-   procedure Fill_Array_Aggregate_1
-     (Block : Block_Instance_Acc;
-      Aggregate : Iir;
-      Res : Iir_Value_Literal_Acc;
-      Orig : Iir_Index32;
-      Step : Iir_Index32;
-      Dim : Iir_Index32;
-      Nbr_Dim : Iir_Index32;
-      El_Type : Iir)
+   procedure Fill_Array_Aggregate_1 (Block : Block_Instance_Acc;
+                                     Aggregate : Iir;
+                                     Res : Iir_Value_Literal_Acc;
+                                     Orig : Iir_Index32;
+                                     Step : Iir_Index32;
+                                     Dim : Iir_Index32;
+                                     Nbr_Dim : Iir_Index32;
+                                     El_Type : Iir)
    is
       Value : Iir;
       Bound : constant Iir_Value_Literal_Acc := Res.Bounds.D (Dim);
+      Length : constant Iir_Index32 := Bound.Length;
 
       procedure Set_Elem (Pos : Iir_Index32)
       is
@@ -1933,7 +1942,6 @@ package body Simul.Execution is
          end loop;
       end Set_Elem_By_Range;
 
-      Length : constant Iir_Index32 := Bound.Length;
       Assoc : Iir;
       Pos : Iir_Index32;
    begin
@@ -1944,11 +1952,30 @@ package body Simul.Execution is
          loop
             case Get_Kind (Assoc) is
                when Iir_Kind_Choice_By_None =>
-                  if Pos >= Length then
-                     Error_Msg_Constraint (Assoc);
+                  if Get_Element_Type_Flag (Assoc) then
+                     if Pos >= Length then
+                        Error_Msg_Constraint (Assoc);
+                     end if;
+
+                     Set_Elem (Pos);
+                     Pos := Pos + 1;
+                  else
+                     declare
+                        Val : Iir_Value_Literal_Acc;
+                     begin
+                        Val := Execute_Expression (Block, Value);
+                        pragma Assert (Val.Kind = Iir_Value_Array);
+                        pragma Assert (Val.Bounds.Nbr_Dims = 1);
+                        for I in 1 .. Val.Val_Array.Len loop
+                           if Pos >= Length then
+                              Error_Msg_Constraint (Assoc);
+                           end if;
+                           Res.Val_Array.V (1 + Orig + Pos * Step) :=
+                             Val.Val_Array.V (I);
+                           Pos := Pos + 1;
+                        end loop;
+                     end;
                   end if;
-                  Set_Elem (Pos);
-                  Pos := Pos + 1;
                when Iir_Kind_Choice_By_Expression =>
                   Set_Elem_By_Expr (Get_Choice_Expression (Assoc));
                when Iir_Kind_Choice_By_Range =>
@@ -1979,10 +2006,9 @@ package body Simul.Execution is
    end Fill_Array_Aggregate_1;
 
    --  Use expressions from (BLOCK, AGGREGATE) to fill RES.
-   procedure Fill_Array_Aggregate
-     (Block : Block_Instance_Acc;
-      Aggregate : Iir;
-      Res : Iir_Value_Literal_Acc)
+   procedure Fill_Array_Aggregate (Block : Block_Instance_Acc;
+                                   Aggregate : Iir;
+                                   Res : Iir_Value_Literal_Acc)
    is
       Aggr_Type : constant Iir := Get_Type (Aggregate);
       El_Type : constant Iir := Get_Element_Subtype (Aggr_Type);
@@ -2111,15 +2137,14 @@ package body Simul.Execution is
    --  Fill LENGTH elements of RES, starting at ORIG by steps of STEP.
    --  Use expressions from (BLOCK, AGGREGATE) to fill the elements.
    --  EL_TYPE is the type of the array element.
-   procedure Execute_Name_Array_Aggregate
-     (Block : Block_Instance_Acc;
-      Aggregate : Iir;
-      Res : Iir_Value_Literal_Acc;
-      Orig : Iir_Index32;
-      Step : Iir_Index32;
-      Dim : Iir_Index32;
-      Nbr_Dim : Iir_Index32;
-      El_Type : Iir)
+   procedure Execute_Name_Array_Aggregate (Block : Block_Instance_Acc;
+                                           Aggregate : Iir;
+                                           Res : Iir_Value_Literal_Acc;
+                                           Orig : Iir_Index32;
+                                           Step : Iir_Index32;
+                                           Dim : Iir_Index32;
+                                           Nbr_Dim : Iir_Index32;
+                                           El_Type : Iir)
    is
       Value : Iir;
       Bound : Iir_Value_Literal_Acc;
@@ -2172,11 +2197,10 @@ package body Simul.Execution is
       end loop;
    end Execute_Name_Array_Aggregate;
 
-   function Execute_Record_Name_Aggregate
-     (Block: Block_Instance_Acc;
-      Aggregate: Iir;
-      Aggregate_Type: Iir)
-      return Iir_Value_Literal_Acc
+   function Execute_Record_Name_Aggregate (Block: Block_Instance_Acc;
+                                           Aggregate: Iir;
+                                           Aggregate_Type: Iir)
+                                          return Iir_Value_Literal_Acc
    is
       List : constant Iir_Flist :=
         Get_Elements_Declaration_List (Get_Base_Type (Aggregate_Type));
@@ -2215,12 +2239,10 @@ package body Simul.Execution is
       return Res;
    end Execute_Record_Name_Aggregate;
 
-   function Execute_Name_Aggregate
-     (Block: Block_Instance_Acc;
-      Aggregate: Iir;
-      Aggregate_Type: Iir)
-      return Iir_Value_Literal_Acc
-   is
+   function Execute_Name_Aggregate (Block: Block_Instance_Acc;
+                                    Aggregate: Iir;
+                                    Aggregate_Type: Iir)
+                                   return Iir_Value_Literal_Acc is
    begin
       case Get_Kind (Aggregate_Type) is
          when Iir_Kind_Array_Type_Definition
@@ -2234,6 +2256,8 @@ package body Simul.Execution is
                Res : Iir_Value_Literal_Acc;
                Step : Iir_Index32;
             begin
+               pragma Assert
+                 (Get_Constraint_State (Aggregate_Type) = Fully_Constrained);
                Res := Create_Array_Bounds_From_Type
                  (Block, Aggregate_Type, True);
                Step := Get_Step_For_Dim (Res, 1);
@@ -2502,11 +2526,10 @@ package body Simul.Execution is
       return Res;
    end Execute_Inc;
 
-   function Execute_Expression_With_Type
-     (Block: Block_Instance_Acc;
-      Expr: Iir;
-      Expr_Type : Iir)
-     return Iir_Value_Literal_Acc
+   function Execute_Expression_With_Type (Block: Block_Instance_Acc;
+                                          Expr: Iir;
+                                          Expr_Type : Iir)
+                                         return Iir_Value_Literal_Acc
    is
       Res : Iir_Value_Literal_Acc;
    begin
@@ -2522,27 +2545,37 @@ package body Simul.Execution is
       end if;
    end Execute_Expression_With_Type;
 
-   function Execute_Signal_Init_Value (Block : Block_Instance_Acc; Expr : Iir)
-                                      return Iir_Value_Literal_Acc
+   function Execute_Signal_Name
+     (Block : Block_Instance_Acc; Expr : Iir; Kind : Signal_Slot)
+     return Iir_Value_Literal_Acc
    is
       Base : constant Iir := Get_Object_Prefix (Expr, False);
       Info : constant Sim_Info_Acc := Get_Info (Base);
       Bblk : Block_Instance_Acc;
+      Slot : Object_Slot_Type;
       Base_Val : Iir_Value_Literal_Acc;
       Res : Iir_Value_Literal_Acc;
       Is_Sig : Boolean;
    begin
       if Get_Kind (Base) = Iir_Kind_Object_Alias_Declaration then
          Bblk := Get_Instance_By_Scope (Block, Info.Obj_Scope);
-         Base_Val := Execute_Signal_Init_Value (Bblk, Get_Name (Base));
+         Base_Val := Execute_Signal_Name (Bblk, Get_Name (Base), Kind);
       else
          Bblk := Get_Instance_By_Scope (Block, Info.Obj_Scope);
-         Base_Val := Bblk.Objects (Info.Slot + 1);
+         case Kind is
+            when Signal_Sig =>
+               Slot := Info.Slot;
+            when Signal_Val =>
+               Slot := Info.Slot + 1;
+            when Signal_Init =>
+               Slot := Info.Slot + 2;
+         end case;
+         Base_Val := Bblk.Objects (Slot);
       end if;
       Execute_Name_With_Base (Block, Expr, Base_Val, Res, Is_Sig);
       pragma Assert (Is_Sig);
       return Res;
-   end Execute_Signal_Init_Value;
+   end Execute_Signal_Name;
 
    --  Indexed element will be at Pfx.Val_Array.V (Pos + 1)
    procedure Execute_Indexed_Name (Block: Block_Instance_Acc;
@@ -2651,7 +2684,8 @@ package body Simul.Execution is
            | Iir_Kind_Attribute_Value
            | Iir_Kind_Iterator_Declaration
            | Iir_Kind_Terminal_Declaration
-           | Iir_Kinds_Quantity_Declaration =>
+           | Iir_Kinds_Quantity_Declaration
+           | Iir_Kind_Psl_Endpoint_Declaration =>
             if Base /= null then
                Res := Base;
             else
@@ -2696,7 +2730,7 @@ package body Simul.Execution is
             begin
                Execute_Name_With_Base
                  (Block, Get_Prefix (Expr), Base, Prefix, Is_Sig);
-               Pos := Get_Element_Position (Get_Selected_Element (Expr));
+               Pos := Get_Element_Position (Get_Named_Entity (Expr));
                Res := Prefix.Val_Record.V (Pos + 1);
             end;
 
@@ -2726,7 +2760,6 @@ package body Simul.Execution is
 
          when Iir_Kind_Aggregate =>
             Res := Execute_Name_Aggregate (Block, Expr, Get_Type (Expr));
-            --  FIXME: is_sig ?
 
          when Iir_Kind_Image_Attribute =>
             Res := Execute_Image_Attribute (Block, Expr);
@@ -2905,7 +2938,8 @@ package body Simul.Execution is
 
    --  For 'Last_Event and 'Last_Active: convert the absolute last time to
    --  a relative delay.
-   function To_Relative_Time (T : Ghdl_I64) return Iir_Value_Literal_Acc is
+   function To_Relative_Time (T : Ghdl_I64) return Iir_Value_Literal_Acc
+   is
       A : Ghdl_I64;
    begin
       if T = -Ghdl_I64'Last then
@@ -2946,7 +2980,8 @@ package body Simul.Execution is
            | Iir_Kind_Slice_Name
            | Iir_Kind_Selected_Element
            | Iir_Kind_Dereference
-           | Iir_Kind_Implicit_Dereference =>
+           | Iir_Kind_Implicit_Dereference
+           | Iir_Kind_Psl_Endpoint_Declaration =>
             return Execute_Name (Block, Expr);
 
          when Iir_Kinds_Denoting_Name
@@ -3258,11 +3293,10 @@ package body Simul.Execution is
       end case;
    end Execute_Expression;
 
-   procedure Execute_Dyadic_Association
-     (Out_Block: Block_Instance_Acc;
-      In_Block: Block_Instance_Acc;
-      Expr : Iir;
-      Inter_Chain: Iir)
+   procedure Execute_Dyadic_Association (Out_Block: Block_Instance_Acc;
+                                         In_Block: Block_Instance_Acc;
+                                         Expr : Iir;
+                                         Inter_Chain: Iir)
    is
       Inter: Iir;
       Val: Iir_Value_Literal_Acc;
@@ -3284,11 +3318,10 @@ package body Simul.Execution is
       end loop;
    end Execute_Dyadic_Association;
 
-   procedure Execute_Monadic_Association
-     (Out_Block: Block_Instance_Acc;
-      In_Block: Block_Instance_Acc;
-      Expr : Iir;
-      Inter: Iir)
+   procedure Execute_Monadic_Association (Out_Block: Block_Instance_Acc;
+                                          In_Block: Block_Instance_Acc;
+                                          Expr : Iir;
+                                          Inter: Iir)
    is
       Val: Iir_Value_Literal_Acc;
    begin
@@ -3306,14 +3339,33 @@ package body Simul.Execution is
    --  FIXME: maybe fix the issue directly in Sem_Inst ?
    function Get_Subprogram_Body_Origin (Spec : Iir) return Iir
    is
-      Orig : constant Iir := Sem_Inst.Get_Origin (Spec);
+      Res : constant Iir := Get_Subprogram_Body (Spec);
+      Orig : Iir;
    begin
-      if Orig /= Null_Iir then
-         return Get_Subprogram_Body_Origin (Orig);
+      if Res /= Null_Iir then
+         return Res;
       else
-         return Get_Subprogram_Body (Spec);
+         Orig := Sem_Inst.Get_Origin (Spec);
+         pragma Assert (Orig /= Null_Iir);
+         return Get_Subprogram_Body_Origin (Orig);
       end if;
    end Get_Subprogram_Body_Origin;
+
+   --  Like Get_Protected_Type_Body, but also works for instances, where
+   --  instantiated nodes have no bodies.
+   --  FIXME: maybe fix the issue directly in Sem_Inst ?
+   function Get_Protected_Type_Body_Origin (Spec : Iir) return Iir
+   is
+      Res : constant Iir := Get_Protected_Type_Body (Spec);
+      Orig : Iir;
+   begin
+      if Res /= Null_Iir then
+         return Res;
+      else
+         Orig := Sem_Inst.Get_Origin (Spec);
+         return Get_Protected_Type_Body_Origin (Orig);
+      end if;
+   end Get_Protected_Type_Body_Origin;
 
    --  Create a block instance for subprogram IMP.
    function Create_Subprogram_Instance (Instance : Block_Instance_Acc;
@@ -3321,43 +3373,37 @@ package body Simul.Execution is
                                         Imp : Iir)
                                        return Block_Instance_Acc
    is
-      Parent : constant Iir := Get_Parent (Imp);
+      Parent : Iir;
       Bod : Iir;
 
       Up_Block: Block_Instance_Acc;
       Up_Info : Sim_Info_Acc;
 
-      Origin : Iir;
       Label : Iir;
    begin
       case Get_Kind (Imp) is
          when Iir_Kinds_Subprogram_Declaration =>
             Bod := Get_Subprogram_Body_Origin (Imp);
-         when Iir_Kind_Protected_Type_Body =>
-            Bod := Imp;
+            Parent := Get_Parent (Imp);
+            Label := Get_Subprogram_Specification (Bod);
+         when Iir_Kind_Protected_Type_Declaration =>
+            --  The parent of the protected type body must have the same scope
+            --  as the parent of the protected type declaration.
+            Bod := Get_Protected_Type_Body_Origin (Imp);
+            Parent := Get_Parent (Get_Type_Declarator (Imp));
+            Label := Imp;
          when others =>
             Error_Kind ("create_subprogram_instance", Imp);
       end case;
 
       if Prot_Obj /= null then
+         --  This is a call to a method (from the outside to a subprogram of
+         --  a protected type). Put the protected object as upblock.
          Up_Block := Prot_Obj;
-         Label := Imp;
       else
+         --  This is a normal subprogram call.
          Up_Info := Get_Info_For_Scope (Parent);
          Up_Block := Get_Instance_By_Scope (Instance, Up_Info);
-
-         if Up_Block.Uninst_Scope /= null then
-            Origin := Sem_Inst.Get_Origin (Imp);
-            pragma Assert (Origin /= Null_Iir);
-            --  Call to a subprogram of an instantiated package.
-            --  For a generic package, only the spec is instantiated, the body
-            --  is shared by all the instances.
-
-            --  Execute code of the 'shared' body
-            Label := Origin;
-         else
-            Label := Imp;
-         end if;
       end if;
 
       --  Extract the info from the body, as it is complete (has slot for
@@ -3383,12 +3429,12 @@ package body Simul.Execution is
                                     Block_Scope => Get_Info (Label),
                                     Uninst_Scope => null,
                                     Up_Block => Up_Block,
-                                    Label => Label,
+                                    Label => Imp,
+                                    Bod => Bod,
                                     Stmt => Null_Iir,
                                     Parent => Instance,
                                     Children => null,
                                     Brother => null,
-                                    Ports_Map => Null_Iir,
                                     Marker => Empty_Marker,
                                     Objects => (others => null),
                                     Elab_Objects => 0,
@@ -3399,28 +3445,39 @@ package body Simul.Execution is
       end;
    end Create_Subprogram_Instance;
 
-   -- Destroy a dynamic block_instance.
-   procedure Execute_Subprogram_Call_Final (Instance : Block_Instance_Acc)
+   function Get_Protected_Object_Instance
+     (Block : Block_Instance_Acc; Call : Iir) return Block_Instance_Acc
    is
-      Subprg_Body : constant Iir := Get_Subprogram_Body (Instance.Label);
+      Meth_Obj : constant Iir := Get_Method_Object (Call);
+      Obj : Iir_Value_Literal_Acc;
+   begin
+      if Meth_Obj = Null_Iir then
+         return null;
+      else
+         Obj := Execute_Name (Block, Meth_Obj, True);
+         return Protected_Table.Table (Obj.Prot);
+      end if;
+   end Get_Protected_Object_Instance;
+
+   -- Destroy a dynamic block_instance.
+   procedure Execute_Subprogram_Call_Final (Instance : Block_Instance_Acc) is
    begin
       Finalize_Declarative_Part
-        (Instance, Get_Declaration_Chain (Subprg_Body));
+        (Instance, Get_Declaration_Chain (Instance.Bod));
    end Execute_Subprogram_Call_Final;
 
    function Execute_Function_Body (Instance : Block_Instance_Acc)
                                   return Iir_Value_Literal_Acc
    is
-      Subprg_Body : constant Iir := Get_Subprogram_Body (Instance.Label);
       Res : Iir_Value_Literal_Acc;
    begin
       Current_Process.Instance := Instance;
 
       Elaborate_Declarative_Part
-        (Instance, Get_Declaration_Chain (Subprg_Body));
+        (Instance, Get_Declaration_Chain (Instance.Bod));
 
       -- execute statements
-      Instance.Stmt := Get_Sequential_Statement_Chain (Subprg_Body);
+      Instance.Stmt := Get_Sequential_Statement_Chain (Instance.Bod);
       Execute_Sequential_Statements (Current_Process);
       pragma Assert (Current_Process.Instance = Instance);
 
@@ -3441,9 +3498,11 @@ package body Simul.Execution is
       return Res;
    end Execute_Function_Body;
 
-   function Execute_Assoc_Function_Conversion
-     (Block : Block_Instance_Acc; Func : Iir; Val : Iir_Value_Literal_Acc)
-     return Iir_Value_Literal_Acc
+   function Execute_Assoc_Function_Conversion (Block : Block_Instance_Acc;
+                                               Func : Iir;
+                                               Prot_Block : Block_Instance_Acc;
+                                               Val : Iir_Value_Literal_Acc)
+                                              return Iir_Value_Literal_Acc
    is
       Inter : Iir;
       Instance : Block_Instance_Acc;
@@ -3453,7 +3512,7 @@ package body Simul.Execution is
       Mark (Marker, Instance_Pool.all);
 
       -- Create an instance for this function.
-      Instance := Create_Subprogram_Instance (Block, null, Func);
+      Instance := Create_Subprogram_Instance (Block, Prot_Block, Func);
 
       Inter := Get_Interface_Declaration_Chain (Func);
       Elaboration.Create_Object (Instance, Inter);
@@ -3471,12 +3530,14 @@ package body Simul.Execution is
      return Iir_Value_Literal_Acc
    is
       Ent : Iir;
+      Prot_Block : Block_Instance_Acc;
    begin
       case Get_Kind (Conv) is
          when Iir_Kind_Function_Call =>
             --  FIXME: shouldn't CONV always be a denoting_name ?
+            Prot_Block := Get_Protected_Object_Instance (Block, Conv);
             return Execute_Assoc_Function_Conversion
-              (Block, Get_Implementation (Conv), Val);
+              (Block, Get_Implementation (Conv), Prot_Block, Val);
          when Iir_Kind_Type_Conversion =>
             --  FIXME: shouldn't CONV always be a denoting_name ?
             return Execute_Type_Conversion (Block, Val, Get_Type (Conv), Conv);
@@ -3484,7 +3545,8 @@ package body Simul.Execution is
            | Iir_Kind_Function_Declaration =>
             Ent := Strip_Denoting_Name (Conv);
             if Get_Kind (Ent) = Iir_Kind_Function_Declaration then
-               return Execute_Assoc_Function_Conversion (Block, Ent, Val);
+               return Execute_Assoc_Function_Conversion
+                 (Block, Ent, null, Val);
             elsif Get_Kind (Ent) in Iir_Kinds_Type_Declaration then
                return Execute_Type_Conversion
                  (Block, Val, Get_Type (Ent), Ent);
@@ -3528,7 +3590,7 @@ package body Simul.Execution is
                end loop;
             end;
          when Iir_Kind_Selected_Element =>
-            Pos := Get_Element_Position (Get_Selected_Element (Formal));
+            Pos := Get_Element_Position (Get_Named_Entity (Formal));
             Store (Pfx.Val_Record.V (Pos + 1), Actual);
          when others =>
             Error_Kind ("associate_by_reference", Formal);
@@ -3537,11 +3599,10 @@ package body Simul.Execution is
 
    --  Establish correspondance for association list ASSOC_LIST from block
    --  instance OUT_BLOCK for subprogram of block SUBPRG_BLOCK.
-   procedure Execute_Association
-     (Out_Block : Block_Instance_Acc;
-      Subprg_Block : Block_Instance_Acc;
-      Inter_Chain : Iir;
-      Assoc_Chain : Iir)
+   procedure Execute_Association (Out_Block : Block_Instance_Acc;
+                                  Subprg_Block : Block_Instance_Acc;
+                                  Inter_Chain : Iir;
+                                  Assoc_Chain : Iir)
    is
       Nbr_Assoc : constant Natural := Get_Chain_Length (Assoc_Chain);
       Assoc: Iir;
@@ -3600,12 +3661,12 @@ package body Simul.Execution is
               | Iir_Kind_Interface_File_Declaration =>
                Val := Execute_Expression (Out_Block, Actual);
                Implicit_Array_Conversion
-                 (Subprg_Block, Val, Get_Type (Formal), Assoc);
-               Check_Constraints (Subprg_Block, Val, Get_Type (Formal), Assoc);
+                 (Out_Block, Val, Get_Type (Formal), Assoc);
+               Check_Constraints (Out_Block, Val, Get_Type (Formal), Assoc);
             when Iir_Kind_Interface_Signal_Declaration =>
                Val := Execute_Name (Out_Block, Actual, True);
                Implicit_Array_Conversion
-                 (Subprg_Block, Val, Get_Type (Formal), Assoc);
+                 (Out_Block, Val, Get_Type (Formal), Assoc);
             when Iir_Kind_Interface_Variable_Declaration =>
                Mode := Get_Mode (Inter);
                if Mode = Iir_In_Mode then
@@ -3661,7 +3722,7 @@ package body Simul.Execution is
                      Conv := Get_Actual_Conversion (Assoc);
                      if Conv /= Null_Iir then
                         Val := Execute_Assoc_Conversion
-                          (Subprg_Block, Conv, Val);
+                          (Out_Block, Conv, Val);
                      end if;
                   end if;
 
@@ -3669,7 +3730,7 @@ package body Simul.Execution is
                end if;
 
                Implicit_Array_Conversion
-                 (Subprg_Block, Val, Get_Type (Formal), Assoc);
+                 (Out_Block, Val, Get_Type (Formal), Assoc);
 
             when others =>
                Error_Kind ("execute_association(2)", Inter);
@@ -3770,20 +3831,6 @@ package body Simul.Execution is
       end loop;
    end Execute_Back_Association;
 
-   function Get_Protected_Object_Instance
-     (Block : Block_Instance_Acc; Call : Iir) return Block_Instance_Acc
-   is
-      Meth_Obj : constant Iir := Get_Method_Object (Call);
-      Obj : Iir_Value_Literal_Acc;
-   begin
-      if Meth_Obj = Null_Iir then
-         return null;
-      else
-         Obj := Execute_Name (Block, Meth_Obj, True);
-         return Protected_Table.Table (Obj.Prot);
-      end if;
-   end Get_Protected_Object_Instance;
-
    function Execute_Foreign_Function_Call
      (Block: Block_Instance_Acc; Expr : Iir; Imp : Iir)
       return Iir_Value_Literal_Acc
@@ -3792,9 +3839,7 @@ package body Simul.Execution is
    begin
       case Get_Identifier (Imp) is
          when Std_Names.Name_Get_Resolution_Limit =>
-            Res := Create_I64_Value
-              (Ghdl_I64
-                 (Evaluation.Get_Physical_Value (Std_Package.Time_Base)));
+            Res := Create_I64_Value (1);
          when Std_Names.Name_Textio_Read_Real =>
             Res := Create_F64_Value
               (File_Operation.Textio_Read_Real (Block.Objects (1)));
@@ -3914,11 +3959,10 @@ package body Simul.Execution is
       end if;
    end Check_Range_Constraints;
 
-   procedure Check_Array_Constraints
-     (Instance: Block_Instance_Acc;
-      Value: Iir_Value_Literal_Acc;
-      Def: Iir;
-      Expr: Iir)
+   procedure Check_Array_Constraints (Instance: Block_Instance_Acc;
+                                      Value: Iir_Value_Literal_Acc;
+                                      Def: Iir;
+                                      Expr: Iir)
    is
       Index_List : Iir_Flist;
       Element_Subtype : Iir;
@@ -3950,11 +3994,10 @@ package body Simul.Execution is
    end Check_Array_Constraints;
 
    --  Check DEST and SRC are array compatible.
-   procedure Check_Array_Match
-     (Instance: Block_Instance_Acc;
-      Dest: Iir_Value_Literal_Acc;
-      Src : Iir_Value_Literal_Acc;
-      Expr: Iir)
+   procedure Check_Array_Match (Instance: Block_Instance_Acc;
+                                Dest: Iir_Value_Literal_Acc;
+                                Src : Iir_Value_Literal_Acc;
+                                Expr: Iir)
    is
       pragma Unreferenced (Instance);
    begin
@@ -3967,11 +4010,10 @@ package body Simul.Execution is
    end Check_Array_Match;
    pragma Unreferenced (Check_Array_Match);
 
-   procedure Check_Constraints
-     (Instance: Block_Instance_Acc;
-      Value: Iir_Value_Literal_Acc;
-      Def: Iir;
-      Expr: Iir)
+   procedure Check_Constraints (Instance: Block_Instance_Acc;
+                                Value: Iir_Value_Literal_Acc;
+                                Def: Iir;
+                                Expr: Iir)
    is
       Base_Type : constant Iir := Get_Base_Type (Def);
       High, Low: Iir_Value_Literal_Acc;
@@ -4068,11 +4110,10 @@ package body Simul.Execution is
       return Execute_Function_Body (Instance);
    end Execute_Resolution_Function;
 
-   procedure Execute_Signal_Assignment
-     (Instance: Block_Instance_Acc;
-      Stmt: Iir_Signal_Assignment_Statement)
+   procedure Execute_Signal_Assignment (Instance: Block_Instance_Acc;
+                                        Stmt: Iir_Signal_Assignment_Statement;
+                                        Wf : Iir)
    is
-      Wf : constant Iir_Waveform_Element := Get_Waveform_Chain (Stmt);
       Nbr_We : constant Natural := Get_Chain_Length (Wf);
 
       Transactions : Transaction_Type (Nbr_We);
@@ -4212,7 +4253,7 @@ package body Simul.Execution is
       Put (Standard_Output, Disp_Location (Stmt));
 
       Put (Standard_Output, ":@");
-      Grt.Astdio.Put_Time (Grt.Stdio.stdout, Current_Time);
+      Grt.Astdio.Vhdl.Put_Time (Grt.Stdio.stdout, Current_Time);
 
       -- 1: an indication that this message is from an assertion.
       Put (Standard_Output, ":(");
@@ -4244,12 +4285,11 @@ package body Simul.Execution is
       end if;
    end Execute_Failed_Assertion;
 
-   procedure Execute_Failed_Assertion
-     (Instance: Block_Instance_Acc;
-      Label : String;
-      Stmt : Iir;
-      Default_Msg : String;
-      Default_Severity : Natural)
+   procedure Execute_Failed_Assertion (Instance: Block_Instance_Acc;
+                                       Label : String;
+                                       Stmt : Iir;
+                                       Default_Msg : String;
+                                       Default_Severity : Natural)
    is
       Expr: Iir;
       Report, Severity_Lit: Iir_Value_Literal_Acc;
@@ -4318,6 +4358,53 @@ package body Simul.Execution is
             Error_Kind ("is_in_choice", Choice);
       end case;
    end Is_In_Choice;
+
+   function Execute_Choice (Instance : Block_Instance_Acc;
+                            Expr : Iir;
+                            First_Assoc : Iir) return Iir
+   is
+      Value: Iir_Value_Literal_Acc;
+      Assoc: Iir;
+      Assoc_Res : Iir;
+      Marker : Mark_Type;
+   begin
+      Mark (Marker, Expr_Pool);
+      Assoc := First_Assoc;
+
+      Value := Execute_Expression (Instance, Expr);
+      if Get_Type_Staticness (Get_Type (Expr)) /= Locally
+        and then Get_Kind (Assoc) = Iir_Kind_Choice_By_Expression
+      then
+         --  Choice is not locally constrained, check length.
+         declare
+            Choice_Type : constant Iir :=
+              Get_Type (Get_Choice_Expression (Assoc));
+            Choice_Len : Iir_Int64;
+         begin
+            Choice_Len := Evaluation.Eval_Discrete_Type_Length
+              (Get_String_Type_Bound_Type (Choice_Type));
+            if Choice_Len /= Iir_Int64 (Value.Bounds.D (1).Length) then
+               Error_Msg_Constraint (Expr);
+            end if;
+         end;
+      end if;
+
+      while Assoc /= Null_Iir loop
+         if not Get_Same_Alternative_Flag (Assoc) then
+            Assoc_Res := Assoc;
+         end if;
+
+         if Is_In_Choice (Instance, Assoc, Value) then
+            Release (Marker, Expr_Pool);
+            return Assoc_Res;
+         end if;
+
+         Assoc := Get_Chain (Assoc);
+      end loop;
+      --  FIXME: infinite loop???
+      Error_Msg_Exec ("no choice for expression", Expr);
+      raise Internal_Error;
+   end Execute_Choice;
 
    --  Return TRUE iff VAL is in the range defined by BOUNDS.
    function Is_In_Range (Val : Iir_Value_Literal_Acc;
@@ -4529,8 +4616,8 @@ package body Simul.Execution is
    end Finish_While_Loop_Statement;
 
    --  Return TRUE if the loop must be executed again
-   function Finish_Loop_Statement (Instance : Block_Instance_Acc;
-                                   Stmt : Iir) return Boolean is
+   function Finish_Loop_Statement (Instance : Block_Instance_Acc; Stmt : Iir)
+                                  return Boolean is
    begin
       Instance.Stmt := Stmt;
       case Get_Kind (Stmt) is
@@ -4591,52 +4678,17 @@ package body Simul.Execution is
    is
       Instance : constant Block_Instance_Acc := Proc.Instance;
       Stmt : constant Iir := Instance.Stmt;
-      Expr : constant Iir := Get_Expression (Stmt);
-      Value: Iir_Value_Literal_Acc;
       Assoc: Iir;
       Stmt_Chain : Iir;
-      Marker : Mark_Type;
    begin
-      Mark (Marker, Expr_Pool);
-
-      Value := Execute_Expression (Instance, Expr);
-      Assoc := Get_Case_Statement_Alternative_Chain (Stmt);
-      if Get_Type_Staticness (Get_Type (Expr)) /= Locally
-        and then Get_Kind (Assoc) = Iir_Kind_Choice_By_Expression
-      then
-         declare
-            Choice_Type : constant Iir :=
-              Get_Type (Get_Choice_Expression (Assoc));
-            Choice_Len : Iir_Int64;
-         begin
-            Choice_Len := Evaluation.Eval_Discrete_Type_Length
-              (Get_String_Type_Bound_Type (Choice_Type));
-            if Choice_Len /= Iir_Int64 (Value.Bounds.D (1).Length) then
-               Error_Msg_Constraint (Expr);
-            end if;
-         end;
+      Assoc := Execute_Choice (Instance, Get_Expression (Stmt),
+                               Get_Case_Statement_Alternative_Chain (Stmt));
+      Stmt_Chain := Get_Associated_Chain (Assoc);
+      if Stmt_Chain = Null_Iir then
+         Update_Next_Statement (Proc);
+      else
+         Instance.Stmt := Stmt_Chain;
       end if;
-
-      while Assoc /= Null_Iir loop
-         if not Get_Same_Alternative_Flag (Assoc) then
-            Stmt_Chain := Get_Associated_Chain (Assoc);
-         end if;
-
-         if Is_In_Choice (Instance, Assoc, Value) then
-            if Stmt_Chain = Null_Iir then
-               Update_Next_Statement (Proc);
-            else
-               Instance.Stmt := Stmt_Chain;
-            end if;
-            Release (Marker, Expr_Pool);
-            return;
-         end if;
-
-         Assoc := Get_Chain (Assoc);
-      end loop;
-      --  FIXME: infinite loop???
-      Error_Msg_Exec ("no choice for expression", Stmt);
-      raise Internal_Error;
    end Execute_Case_Statement;
 
    procedure Execute_Call_Statement (Proc : Process_State_Acc)
@@ -4649,7 +4701,6 @@ package body Simul.Execution is
       Prot_Block : Block_Instance_Acc;
       Assoc_Chain: Iir;
       Inter_Chain : Iir;
-      Subprg_Body : Iir;
    begin
       if Get_Implicit_Definition (Imp) in Iir_Predefined_Implicit then
          Execute_Implicit_Procedure (Instance, Call);
@@ -4668,11 +4719,10 @@ package body Simul.Execution is
            (Instance, Subprg_Instance, Inter_Chain, Assoc_Chain);
 
          Current_Process.Instance := Subprg_Instance;
-         Subprg_Body := Get_Subprogram_Body (Imp);
          Elaborate_Declarative_Part
-           (Subprg_Instance, Get_Declaration_Chain (Subprg_Body));
+           (Subprg_Instance, Get_Declaration_Chain (Subprg_Instance.Bod));
 
-         Init_Sequential_Statements (Proc, Subprg_Body);
+         Init_Sequential_Statements (Proc, Subprg_Instance.Bod);
       end if;
    end Execute_Call_Statement;
 
@@ -4704,8 +4754,7 @@ package body Simul.Execution is
       Update_Next_Statement (Proc);
    end Execute_If_Statement;
 
-   procedure Execute_Variable_Assignment
-     (Proc : Process_State_Acc; Stmt : Iir)
+   procedure Execute_Variable_Assignment (Proc : Process_State_Acc; Stmt : Iir)
    is
       Instance : constant Block_Instance_Acc := Proc.Instance;
       Target : constant Iir := Get_Target (Stmt);
@@ -4883,9 +4932,20 @@ package body Simul.Execution is
                Execute_If_Statement (Proc, Stmt);
 
             when Iir_Kind_Simple_Signal_Assignment_Statement =>
-               Execute_Signal_Assignment (Instance, Stmt);
+               Execute_Signal_Assignment
+                 (Instance, Stmt, Get_Waveform_Chain (Stmt));
                Update_Next_Statement (Proc);
 
+            when Iir_Kind_Selected_Waveform_Assignment_Statement =>
+               declare
+                  Assoc : Iir;
+               begin
+                  Assoc := Execute_Choice (Instance, Get_Expression (Stmt),
+                                           Get_Selected_Waveform_Chain (Stmt));
+                  Execute_Signal_Assignment
+                    (Instance, Stmt, Get_Associated_Chain (Assoc));
+                  Update_Next_Statement (Proc);
+               end;
             when Iir_Kind_Assertion_Statement =>
                declare
                   Res : Boolean;

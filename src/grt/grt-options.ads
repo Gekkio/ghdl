@@ -55,6 +55,19 @@ package Grt.Options is
    Flag_String : constant String (1 .. 5);
    pragma Import (C, Flag_String, "__ghdl_flag_string");
 
+   --  Time resolution extracted from Flag_String, in multiple of -3:
+   --  0: sec
+   --  1: ms
+   --  2: us
+   --  3: ns
+   --  4: ps
+   --  5: fs
+   subtype Natural_Time_Scale is Natural range 0 .. 5;
+   Time_Resolution_Scale : Natural_Time_Scale;
+
+   --  Set Time_Resolution_Scale from Flag_String.
+   procedure Set_Time_Resolution;
+
    --  Display options help.
    --  Should not be called directly.
    procedure Help;
@@ -144,9 +157,10 @@ package Grt.Options is
    -- or append_mode (TEXTIO)
    Unbuffered_Writes : Boolean := False;
 
-   --  Set the time resolution.
-   --  Only call this subprogram if you are allowed to set the time resolution.
-   procedure Set_Time_Resolution (Res : Character);
+   --  Helper: extract time from STR (a number followed by a unit, without
+   --  spaces; the number is optionnal).  In case of error, display an error
+   --  message and returns -1.
+   function Parse_Time (Str : String) return Std_Time;
 
    --  Simply linked list of generic override (option -gIDENT=VALUE).
    type Generic_Override_Type;

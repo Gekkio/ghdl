@@ -18,14 +18,16 @@
 with Types; use Types;
 with Name_Table;
 with Iirs; use Iirs;
-with Libraries; use Libraries;
+with Libraries;
 with Iirs_Utils; use Iirs_Utils;
 with Std_Package;
 with Flags;
 with Configuration;
 with Translation;
 with Sem;
+with Sem_Lib; use Sem_Lib;
 with Errorout; use Errorout;
+with Errorout.Console;
 with GNAT.OS_Lib;
 with Bug;
 with Trans_Be;
@@ -72,6 +74,9 @@ package body Ortho_Front is
 
    procedure Init is
    begin
+      --  Set program name for error message.
+      Errorout.Console.Install_Handler;
+
       -- Initialize.
       Trans_Be.Register_Translation_Back_End;
 
@@ -147,6 +152,7 @@ package body Ortho_Front is
 
    function Decode_Option (Opt : String_Acc; Arg: String_Acc) return Natural
    is
+      pragma Assert (Opt'First = 1);
    begin
       if Opt.all = "--compile-standard" then
          Action := Action_Compile_Std_Package;
@@ -216,11 +222,16 @@ package body Ortho_Front is
          Flag_Expect_Failure := True;
          return 1;
       elsif Opt'Length > 7 and then Opt (1 .. 7) = "--ghdl-" then
-         if Options.Parse_Option (Opt (7 .. Opt'Last)) then
-            return 1;
-         else
-            return 0;
-         end if;
+         declare
+            subtype Str_Type is String (1 .. Opt'Last - 6);
+         begin
+            --  The option parameter must be normalized (starts at index 1).
+            if Options.Parse_Option (Str_Type (Opt (7 .. Opt'Last))) then
+               return 1;
+            else
+               return 0;
+            end if;
+         end;
       elsif Options.Parse_Option (Opt.all) then
          return 1;
       else
@@ -268,7 +279,7 @@ package body Ortho_Front is
       Flags.Flag_Elaborate := False;
 
       --  Read and parse the file.
-      Res := Libraries.Load_File (Vhdl_File);
+      Res := Load_File_Name (Vhdl_File);
       if Errorout.Nbr_Errors > 0 then
          raise Compilation_Error;
       end if;
@@ -279,7 +290,7 @@ package body Ortho_Front is
       Design := Get_First_Design_Unit (Res);
       while Is_Valid (Design) loop
          --  Analyze and canon a design unit.
-         Libraries.Finish_Compilation (Design, True);
+         Finish_Compilation (Design, True);
 
          Next_Design := Get_Chain (Design);
          if Errorout.Nbr_Errors = 0 then
@@ -393,6 +404,7 @@ package body Ortho_Front is
       Res : Iir_Design_File;
       Design : Iir_Design_Unit;
       Next_Design : Iir_Design_Unit;
+      Config : Iir;
    begin
       if Nbr_Parse = 0 then
          --  Initialize only once...
@@ -417,9 +429,13 @@ package body Ortho_Front is
                Error_Msg_Option ("missing -l for --elab");
                raise Option_Error;
             end if;
-            Translation.Elaborate
-              (Elab_Entity.all, Elab_Architecture.all,
-               Elab_Filelist.all, False);
+            Config := Configuration.Configure
+              (Elab_Entity.all, Elab_Architecture.all);
+            if Errorout.Nbr_Errors > 0 then
+               --  This may happen (bad entity for example).
+               raise Compilation_Error;
+            end if;
+            Translation.Elaborate (Config, Elab_Filelist.all, False);
 
             if Errorout.Nbr_Errors > 0 then
                --  This may happen (bad entity for example).
@@ -444,7 +460,7 @@ package body Ortho_Front is
                begin
                   L := Anaelab_Files;
                   while L /= null loop
-                     Res := Libraries.Load_File (L.Id);
+                     Res := Load_File_Name (L.Id);
                      if Errorout.Nbr_Errors > 0 then
                         raise Compilation_Error;
                      end if;
@@ -464,8 +480,9 @@ package body Ortho_Front is
 
             Flags.Flag_Elaborate := True;
             Flags.Flag_Only_Elab_Warnings := False;
-            Translation.Elaborate
-              (Elab_Entity.all, Elab_Architecture.all, "", True);
+            Config := Configuration.Configure
+              (Elab_Entity.all, Elab_Architecture.all);
+            Translation.Elaborate (Config, "", True);
 
             if Errorout.Nbr_Errors > 0 then
                --  This may happen (bad entity for example).
@@ -500,8 +517,7 @@ package body Ortho_Front is
          return True;
       end if;
    exception
-      when Compilation_Error
-        | Parse_Error =>
+      when Compilation_Error =>
          if Flag_Expect_Failure then
             --  Very brutal...
             GNAT.OS_Lib.OS_Exit (0);

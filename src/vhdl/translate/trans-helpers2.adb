@@ -88,15 +88,12 @@ package body Trans.Helpers2 is
    end Create_String;
 
    function Create_String (Str : Name_Id; Id : O_Ident; Storage : O_Storage)
-                              return O_Dnode
+                          return O_Dnode
    is
       use Name_Table;
    begin
-      if Name_Table.Is_Character (Str) then
-         raise Internal_Error;
-      end if;
-      Image (Str);
-      return Create_String (Nam_Buffer (1 .. Nam_Length), Id, Storage);
+      pragma Assert (not Name_Table.Is_Character (Str));
+      return Create_String (Image (Str), Id, Storage);
    end Create_String;
 
    function Create_String_Len (Str : String; Id : O_Ident) return O_Cnode
@@ -111,8 +108,8 @@ package body Trans.Helpers2 is
                                        Unsigned_64 (Str'Length));
       Start_Record_Aggr (List, Ghdl_Str_Len_Type_Node);
       New_Record_Aggr_El (List, Str_Len);
-      New_Record_Aggr_El (List, New_Global_Address (Str_Cst,
-                          Char_Ptr_Type));
+      New_Record_Aggr_El (List, New_Global_Address (New_Global (Str_Cst),
+                                                    Char_Ptr_Type));
       Finish_Record_Aggr (List, Res);
       return Res;
    end Create_String_Len;
@@ -237,11 +234,9 @@ package body Trans.Helpers2 is
       Type_Info := Get_Info (Targ_Type);
       Res := E2M (Val, Type_Info, Mode_Value);
       case Type_Info.Type_Mode is
-         when Type_Mode_Array
-            | Type_Mode_Unbounded_Array =>
+         when Type_Mode_Arrays =>
             Res := Chap3.Get_Composite_Base (Res);
-         when Type_Mode_Record
-           | Type_Mode_Unbounded_Record =>
+         when Type_Mode_Records =>
             Res := Stabilize (Res);
          when others =>
             --  Not a composite type!
@@ -288,10 +283,11 @@ package body Trans.Helpers2 is
    procedure Assoc_Filename_Line (Assoc : in out O_Assoc_List;
                                   Line  : Natural) is
    begin
-      New_Association (Assoc,
-                       New_Lit (New_Global_Address (Current_Filename_Node,
-                                                    Char_Ptr_Type)));
-      New_Association (Assoc, New_Lit (New_Signed_Literal
-                       (Ghdl_I32_Type, Integer_64 (Line))));
+      New_Association
+        (Assoc, New_Address (New_Obj (Current_Filename_Node),
+                             Char_Ptr_Type));
+      New_Association
+        (Assoc, New_Lit (New_Signed_Literal (Ghdl_I32_Type,
+                                             Integer_64 (Line))));
    end Assoc_Filename_Line;
 end Trans.Helpers2;

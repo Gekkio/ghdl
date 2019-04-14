@@ -16,7 +16,6 @@
 --  Software Foundation, 59 Temple Place - Suite 330, Boston, MA
 --  02111-1307, USA.
 
-with Ada.Text_IO;
 with Ada.Unchecked_Deallocation;
 with Types; use Types;
 with Iirs; use Iirs;
@@ -230,7 +229,7 @@ package Simul.Environments is
 
    -- The annotation depends on the kind of the node.
    type Sim_Info_Kind is
-     (Kind_Block, Kind_Process, Kind_Frame, Kind_Package,
+     (Kind_Block, Kind_Process, Kind_Frame, Kind_Protected, Kind_Package,
       Kind_Scalar_Type, Kind_File_Type,
       Kind_Object, Kind_Signal,
       Kind_File,
@@ -246,9 +245,13 @@ package Simul.Environments is
 
    -- Annotation for an iir node in order to be able to simulate it.
    type Sim_Info_Type (Kind: Sim_Info_Kind) is record
+      --  Redundant, to be used only for debugging.
+      Ref : Iir;
+
       case Kind is
          when Kind_Block
            | Kind_Frame
+           | Kind_Protected
            | Kind_Process
            | Kind_Package =>
             --  Number of objects/signals.
@@ -310,6 +313,9 @@ package Simul.Environments is
       --  this instance.
       Label : Iir;
 
+      --  For subprograms: the body.
+      Bod : Iir;
+
       --  For blocks: corresponding block (different from label for direct
       --  component instantiation statement and generate iterator).
       --  For packages: Null_Iir
@@ -326,9 +332,6 @@ package Simul.Environments is
       --  Not null only for blocks and processes.
       Children: Block_Instance_Acc;
       Brother: Block_Instance_Acc;
-
-      --  Port association map for this block, if any.
-      Ports_Map : Iir;
 
       --  Pool marker for the child (only for subprograms and processes).
       Marker : Areapools.Mark_Type;
@@ -520,7 +523,10 @@ package Simul.Environments is
    -- Disp a value_literal in raw form.
    procedure Disp_Value (Value: Iir_Value_Literal_Acc);
    procedure Disp_Value_Tab (Value: Iir_Value_Literal_Acc;
-                             Tab: Ada.Text_IO.Count);
+                             Indent : Natural);
+
+   -- Disp literal of an enumerated type.
+   procedure Disp_Iir_Value_Enum (Pos : Natural; A_Type : Iir);
 
    -- Disp a value_literal in readable form.
    procedure Disp_Iir_Value (Value: Iir_Value_Literal_Acc; A_Type: Iir);
